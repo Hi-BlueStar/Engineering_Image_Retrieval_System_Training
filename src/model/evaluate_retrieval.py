@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Evaluate retrieval metrics on a FAISS index built from SimSiam embeddings.
 
@@ -18,50 +17,112 @@ import argparse
 import csv
 import json
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
 
 import faiss
 import torch
 
 from src.model.simsiam import SimSiam, embed_images, make_norm
 
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate retrieval quality using a SimSiam encoder and FAISS index.")
-    parser.add_argument("--query_dir", required=True, type=Path, help="Directory containing query images.")
-    parser.add_argument("--model_path", type=Path, default=Path("results") / "simsiam_model.pth", help="Trained SimSiam weights.")
-    parser.add_argument("--index_path", type=Path, default=Path("results") / "gallery.index", help="FAISS index file.")
-    parser.add_argument("--mapping_path", type=Path, default=Path("results") / "index_to_path.json", help="Index-to-path JSON mapping.")
-    parser.add_argument("--backbone", type=str, default="resnet50", choices=["resnet18", "resnet50"], help="SimSiam backbone (must match training).")
-    parser.add_argument("--img_size", type=int, default=224, help="Image size used for embedding.")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for query embedding.")
-    parser.add_argument("--top_k", type=int, default=10, help="Number of nearest neighbors to examine.")
-    parser.add_argument("--device", type=str, default=None, help="Override device (cpu or cuda).")
-    parser.add_argument("--query_labels_csv", type=Path, help="Optional CSV with 'path,label' for queries.")
-    parser.add_argument("--gallery_labels_csv", type=Path, help="Optional CSV with 'path,label' for gallery entries.")
-    parser.add_argument("--skip_same_path", action="store_true", help="Skip gallery results that match the exact query path.")
-    parser.add_argument("--output_path", type=Path, default=Path("results") / "eval_metrics.json", help="Where to store aggregated metrics.")
-    parser.add_argument("--details_json", type=Path, help="Optional per-query JSON dump of retrieval results.")
-    parser.add_argument("--results_csv", type=Path, help="Optional per-query CSV summary.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate retrieval quality using a SimSiam encoder and FAISS index."
+    )
+    parser.add_argument(
+        "--query_dir",
+        required=True,
+        type=Path,
+        help="Directory containing query images.",
+    )
+    parser.add_argument(
+        "--model_path",
+        type=Path,
+        default=Path("results") / "simsiam_model.pth",
+        help="Trained SimSiam weights.",
+    )
+    parser.add_argument(
+        "--index_path",
+        type=Path,
+        default=Path("results") / "gallery.index",
+        help="FAISS index file.",
+    )
+    parser.add_argument(
+        "--mapping_path",
+        type=Path,
+        default=Path("results") / "index_to_path.json",
+        help="Index-to-path JSON mapping.",
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="SimSiam backbone (must match training).",
+    )
+    parser.add_argument(
+        "--img_size", type=int, default=224, help="Image size used for embedding."
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=128, help="Batch size for query embedding."
+    )
+    parser.add_argument(
+        "--top_k", type=int, default=10, help="Number of nearest neighbors to examine."
+    )
+    parser.add_argument(
+        "--device", type=str, default=None, help="Override device (cpu or cuda)."
+    )
+    parser.add_argument(
+        "--query_labels_csv",
+        type=Path,
+        help="Optional CSV with 'path,label' for queries.",
+    )
+    parser.add_argument(
+        "--gallery_labels_csv",
+        type=Path,
+        help="Optional CSV with 'path,label' for gallery entries.",
+    )
+    parser.add_argument(
+        "--skip_same_path",
+        action="store_true",
+        help="Skip gallery results that match the exact query path.",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=Path,
+        default=Path("results") / "eval_metrics.json",
+        help="Where to store aggregated metrics.",
+    )
+    parser.add_argument(
+        "--details_json",
+        type=Path,
+        help="Optional per-query JSON dump of retrieval results.",
+    )
+    parser.add_argument(
+        "--results_csv", type=Path, help="Optional per-query CSV summary."
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def list_images(root: Path) -> List[Path]:
+def list_images(root: Path) -> list[Path]:
     if not root.exists():
         raise FileNotFoundError(f"Directory not found: {root}")
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_EXTS)
     if not files:
-        raise FileNotFoundError(f"No images with extensions {sorted(IMAGE_EXTS)} under {root}")
+        raise FileNotFoundError(
+            f"No images with extensions {sorted(IMAGE_EXTS)} under {root}"
+        )
     return files
 
 
-def load_labels_csv(path: Optional[Path]) -> Dict[str, str]:
+def load_labels_csv(path: Path | None) -> dict[str, str]:
     if path is None:
         return {}
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     with path.open("r", encoding="utf-8", newline="") as f:
         first_line = f.readline()
         f.seek(0)
@@ -82,7 +143,7 @@ def load_labels_csv(path: Optional[Path]) -> Dict[str, str]:
     return mapping
 
 
-def lookup_label(path: Path, label_map: Dict[str, str]) -> str:
+def lookup_label(path: Path, label_map: dict[str, str]) -> str:
     resolved = str(path.resolve())
     if resolved in label_map:
         return label_map[resolved]
@@ -92,7 +153,7 @@ def lookup_label(path: Path, label_map: Dict[str, str]) -> str:
     return path.parent.name
 
 
-def write_results_csv(rows: List[Dict[str, object]], output_path: Path) -> None:
+def write_results_csv(rows: list[dict[str, object]], output_path: Path) -> None:
     if not rows:
         return
     fieldnames = sorted(rows[0].keys())
@@ -136,7 +197,14 @@ def main(argv: Iterable[str] | None = None) -> None:
     norm = make_norm(mean, std)
 
     embed_start = time.perf_counter()
-    queries_tensor = embed_images(model, query_paths, norm, device=device, batch=args.batch_size, img_size=args.img_size)
+    queries_tensor = embed_images(
+        model,
+        query_paths,
+        norm,
+        device=device,
+        batch=args.batch_size,
+        img_size=args.img_size,
+    )
     embed_time = time.perf_counter() - embed_start
     if queries_tensor.numel() == 0:
         raise RuntimeError("Failed to compute query embeddings.")
@@ -144,7 +212,9 @@ def main(argv: Iterable[str] | None = None) -> None:
     index = faiss.read_index(str(args.index_path))
     dim = index.d
     if queries_tensor.shape[1] != dim:
-        raise ValueError(f"Embedding dimension {queries_tensor.shape[1]} does not match index dimension {dim}.")
+        raise ValueError(
+            f"Embedding dimension {queries_tensor.shape[1]} does not match index dimension {dim}."
+        )
 
     queries_np = queries_tensor.cpu().numpy()
     top_k = min(args.top_k, index.ntotal)
@@ -161,8 +231,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     precision_sum = 0.0
     top1_score_sum = 0.0
     zero_result_queries = 0
-    per_query_rows: List[Dict[str, object]] = []
-    per_query_details: List[Dict[str, object]] = []
+    per_query_rows: list[dict[str, object]] = []
+    per_query_details: list[dict[str, object]] = []
 
     for idx_query, query_path in enumerate(query_paths):
         query_label = lookup_label(query_path, query_labels)
@@ -184,22 +254,26 @@ def main(argv: Iterable[str] | None = None) -> None:
 
         if not retrieved:
             zero_result_queries += 1
-            per_query_rows.append({
-                "query_path": str(query_path),
-                "query_label": query_label,
-                "top1_path": "",
-                "top1_score": "",
-                "top1_match": 0,
-                "matches_in_topk": 0,
-                "precision_at_k": 0.0,
-            })
-            per_query_details.append({
-                "query_path": str(query_path),
-                "query_label": query_label,
-                "retrieved": [],
-                "top1_match": False,
-                "precision_at_k": 0.0,
-            })
+            per_query_rows.append(
+                {
+                    "query_path": str(query_path),
+                    "query_label": query_label,
+                    "top1_path": "",
+                    "top1_score": "",
+                    "top1_match": 0,
+                    "matches_in_topk": 0,
+                    "precision_at_k": 0.0,
+                }
+            )
+            per_query_details.append(
+                {
+                    "query_path": str(query_path),
+                    "query_label": query_label,
+                    "retrieved": [],
+                    "top1_match": False,
+                    "precision_at_k": 0.0,
+                }
+            )
             continue
 
         top1_path, top1_score = retrieved[0]
@@ -214,39 +288,51 @@ def main(argv: Iterable[str] | None = None) -> None:
             label = lookup_label(path, gallery_labels)
             match = int(label == query_label)
             matches += match
-            retrieved_records.append({
-                "rank": rank,
-                "path": str(path),
-                "score": score,
-                "label": label,
-                "match": match,
-            })
+            retrieved_records.append(
+                {
+                    "rank": rank,
+                    "path": str(path),
+                    "score": score,
+                    "label": label,
+                    "match": match,
+                }
+            )
         precision_at_k = matches / min(top_k, len(retrieved))
         precision_sum += precision_at_k
         topk_hits += int(matches > 0)
 
-        per_query_rows.append({
-            "query_path": str(query_path),
-            "query_label": query_label,
-            "top1_path": str(top1_path),
-            "top1_score": top1_score,
-            "top1_match": top1_match,
-            "matches_in_topk": matches,
-            "precision_at_k": precision_at_k,
-        })
-        per_query_details.append({
-            "query_path": str(query_path),
-            "query_label": query_label,
-            "top1_match": bool(top1_match),
-            "precision_at_k": precision_at_k,
-            "retrieved": retrieved_records,
-        })
+        per_query_rows.append(
+            {
+                "query_path": str(query_path),
+                "query_label": query_label,
+                "top1_path": str(top1_path),
+                "top1_score": top1_score,
+                "top1_match": top1_match,
+                "matches_in_topk": matches,
+                "precision_at_k": precision_at_k,
+            }
+        )
+        per_query_details.append(
+            {
+                "query_path": str(query_path),
+                "query_label": query_label,
+                "top1_match": bool(top1_match),
+                "precision_at_k": precision_at_k,
+                "retrieved": retrieved_records,
+            }
+        )
 
     top1_accuracy = top1_hits / evaluated if evaluated else 0.0
     hit_rate = topk_hits / evaluated if evaluated else 0.0
     mean_precision = precision_sum / evaluated if evaluated else 0.0
-    mean_top1_score = (top1_score_sum / (evaluated - zero_result_queries)) if (evaluated - zero_result_queries) > 0 else 0.0
-    avg_query_time_ms = ((embed_time + search_time) / evaluated * 1000) if evaluated else 0.0
+    mean_top1_score = (
+        (top1_score_sum / (evaluated - zero_result_queries))
+        if (evaluated - zero_result_queries) > 0
+        else 0.0
+    )
+    avg_query_time_ms = (
+        ((embed_time + search_time) / evaluated * 1000) if evaluated else 0.0
+    )
 
     metrics = {
         "total_queries": evaluated,
@@ -276,7 +362,9 @@ def main(argv: Iterable[str] | None = None) -> None:
         args.results_csv.parent.mkdir(parents=True, exist_ok=True)
         write_results_csv(per_query_rows, args.results_csv)
 
-    print(f"Evaluated {evaluated} queries. Top-1 accuracy={top1_accuracy:.3f}, Hit@{top_k}={hit_rate:.3f}, mP@{top_k}={mean_precision:.3f}")
+    print(
+        f"Evaluated {evaluated} queries. Top-1 accuracy={top1_accuracy:.3f}, Hit@{top_k}={hit_rate:.3f}, mP@{top_k}={mean_precision:.3f}"
+    )
     print(f"Metrics written to {args.output_path}")
 
 

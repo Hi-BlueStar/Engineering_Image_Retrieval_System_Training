@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Embed gallery images with a trained SimSiam model and build a FAISS index.
 
@@ -11,35 +10,62 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List
 
 import faiss
 import torch
 
 from src.model.simsiam import SimSiam, embed_images, make_norm
 
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
-def list_images(root: Path) -> List[Path]:
+def list_images(root: Path) -> list[Path]:
     if not root.exists():
         raise FileNotFoundError(f"Directory not found: {root}")
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_EXTS)
     if not files:
-        raise FileNotFoundError(f"No images with extensions {sorted(IMAGE_EXTS)} under {root}")
+        raise FileNotFoundError(
+            f"No images with extensions {sorted(IMAGE_EXTS)} under {root}"
+        )
     return files
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build FAISS index for image gallery.")
-    parser.add_argument("--gallery_dir", required=True, type=Path, help="Directory with gallery images.")
-    parser.add_argument("--model_path", type=Path, default=Path("results") / "simsiam_model.pth", help="Path to trained SimSiam weights.")
-    parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory to store index files.")
-    parser.add_argument("--backbone", type=str, default="resnet50", choices=["resnet18", "resnet50"], help="SimSiam backbone (must match training).")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size for embedding.")
-    parser.add_argument("--img_size", type=int, default=224, help="Image size used during training.")
-    parser.add_argument("--device", type=str, default=None, help="Override device (cpu or cuda).")
+    parser.add_argument(
+        "--gallery_dir", required=True, type=Path, help="Directory with gallery images."
+    )
+    parser.add_argument(
+        "--model_path",
+        type=Path,
+        default=Path("results") / "simsiam_model.pth",
+        help="Path to trained SimSiam weights.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=Path,
+        default=Path("results"),
+        help="Directory to store index files.",
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="SimSiam backbone (must match training).",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=256, help="Batch size for embedding."
+    )
+    parser.add_argument(
+        "--img_size", type=int, default=224, help="Image size used during training."
+    )
+    parser.add_argument(
+        "--device", type=str, default=None, help="Override device (cpu or cuda)."
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -66,9 +92,18 @@ def main(argv: Iterable[str] | None = None) -> None:
     model.eval()
 
     with torch.inference_mode():
-        embeddings = embed_images(model, gallery_paths, norm, device=device, batch=args.batch_size, img_size=args.img_size)
+        embeddings = embed_images(
+            model,
+            gallery_paths,
+            norm,
+            device=device,
+            batch=args.batch_size,
+            img_size=args.img_size,
+        )
     if embeddings.numel() == 0:
-        raise RuntimeError("No embeddings were generated. Check gallery directory and preprocessing.")
+        raise RuntimeError(
+            "No embeddings were generated. Check gallery directory and preprocessing."
+        )
 
     if embeddings.dtype != torch.float32:
         embeddings = embeddings.float()

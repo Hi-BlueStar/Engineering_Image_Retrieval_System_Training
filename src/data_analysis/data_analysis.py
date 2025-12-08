@@ -13,10 +13,8 @@ Author: Antigravity
 Date: 2025-12-04
 """
 
-import os
 import hashlib
 import logging
-from typing import List, Tuple, Optional, Dict, Union
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -24,16 +22,16 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import torch
+import umap
 from PIL import Image
 from sentence_transformers import SentenceTransformer
 from sklearn.manifold import TSNE
-import umap
 from tqdm import tqdm
+
 
 # Configure Logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -64,7 +62,7 @@ class CADPreprocessor:
                 buf = f.read(65536)
         return hasher.hexdigest()
 
-    def convert_pdf_to_image(self, pdf_path: Path) -> Optional[Path]:
+    def convert_pdf_to_image(self, pdf_path: Path) -> Path | None:
         """
         Converts the first page of a PDF to a PNG image.
 
@@ -115,24 +113,28 @@ class CADPreprocessor:
             raise FileNotFoundError(f"Directory {root_dir} not found.")
 
         categories = [d for d in root_path.iterdir() if d.is_dir()]
-        
-        logger.info(f"Found {len(categories)} categories: {[c.name for c in categories]}")
+
+        logger.info(
+            f"Found {len(categories)} categories: {[c.name for c in categories]}"
+        )
 
         for category_dir in categories:
             label = category_dir.name
             pdf_files = list(category_dir.glob("*.pdf"))
-            
+
             logger.info(f"Processing {len(pdf_files)} files in category '{label}'...")
 
             for pdf_file in tqdm(pdf_files, desc=f"Converting {label}"):
                 image_path = self.convert_pdf_to_image(pdf_file)
                 if image_path:
-                    data.append({
-                        "filename": pdf_file.name,
-                        "label": label,
-                        "image_path": str(image_path),
-                        "original_path": str(pdf_file)
-                    })
+                    data.append(
+                        {
+                            "filename": pdf_file.name,
+                            "label": label,
+                            "image_path": str(image_path),
+                            "original_path": str(pdf_file),
+                        }
+                    )
 
         df = pd.DataFrame(data)
         logger.info(f"Total valid samples processed: {len(df)}")
@@ -152,14 +154,20 @@ class OpenCLIPExtractor:
                         For specific LAION-2B model, use 'laion/CLIP-ViT-L-14-laion2B-s32B-b82K'
                         if supported by sentence-transformers directly, or use the mapping.
         """
-        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        self.device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
         logger.info(f"Loading OpenCLIP model '{model_name}' on {self.device}...")
-        
+
         # Note: sentence-transformers handles the specific CLIP model loading details
         self.model = SentenceTransformer(model_name, device=self.device)
         logger.info("Model loaded successfully.")
 
-    def encode_images(self, image_paths: List[str], batch_size: int = 32) -> np.ndarray:
+    def encode_images(self, image_paths: list[str], batch_size: int = 32) -> np.ndarray:
         """
         Encodes a list of image paths into embeddings.
         Processes images in batches to avoid OOM errors.
@@ -172,15 +180,15 @@ class OpenCLIPExtractor:
             Numpy array of shape (N_samples, Embedding_Dim).
         """
         all_embeddings = []
-        
+
         logger.info(f"Encoding {len(image_paths)} images in batches of {batch_size}...")
-        
+
         # Process in chunks
         for i in tqdm(range(0, len(image_paths), batch_size), desc="Batch Processing"):
             batch_paths = image_paths[i : i + batch_size]
             batch_images = []
             valid_indices = []
-            
+
             # Load batch
             for idx, path in enumerate(batch_paths):
                 try:
@@ -189,7 +197,7 @@ class OpenCLIPExtractor:
                     valid_indices.append(idx)
                 except Exception as e:
                     logger.error(f"Error loading image {path}: {e}")
-            
+
             if not batch_images:
                 continue
 
@@ -200,18 +208,18 @@ class OpenCLIPExtractor:
                     batch_size=batch_size,
                     show_progress_bar=False,
                     convert_to_numpy=True,
-                    normalize_embeddings=True
+                    normalize_embeddings=True,
                 )
                 all_embeddings.append(batch_embeddings)
             except Exception as e:
                 logger.error(f"Error encoding batch starting at index {i}: {e}")
-            
+
             # Explicitly clear batch images to free memory
             del batch_images
 
         if not all_embeddings:
             raise ValueError("No valid images to encode.")
-        
+
         return np.vstack(all_embeddings)
 
 
@@ -223,7 +231,9 @@ class ManifoldReducer:
     def __init__(self, random_state: int = 42):
         self.random_state = random_state
 
-    def fit_transform_umap(self, embeddings: np.ndarray, n_neighbors: int = 15, min_dist: float = 0.1) -> np.ndarray:
+    def fit_transform_umap(
+        self, embeddings: np.ndarray, n_neighbors: int = 15, min_dist: float = 0.1
+    ) -> np.ndarray:
         """
         Applies UMAP reduction.
 
@@ -235,17 +245,21 @@ class ManifoldReducer:
         Returns:
             2D array of reduced coordinates.
         """
-        logger.info(f"Running UMAP (n_neighbors={n_neighbors}, min_dist={min_dist}, metric='cosine')...")
+        logger.info(
+            f"Running UMAP (n_neighbors={n_neighbors}, min_dist={min_dist}, metric='cosine')..."
+        )
         reducer = umap.UMAP(
             n_neighbors=n_neighbors,
             min_dist=min_dist,
-            metric='cosine',  # Critical for high-dim embeddings like CLIP
+            metric="cosine",  # Critical for high-dim embeddings like CLIP
             random_state=self.random_state,
-            n_jobs=-1
+            n_jobs=-1,
         )
         return reducer.fit_transform(embeddings)
 
-    def fit_transform_tsne(self, embeddings: np.ndarray, perplexity: int = 30) -> np.ndarray:
+    def fit_transform_tsne(
+        self, embeddings: np.ndarray, perplexity: int = 30
+    ) -> np.ndarray:
         """
         Applies t-SNE reduction.
 
@@ -260,17 +274,19 @@ class ManifoldReducer:
         n_samples = embeddings.shape[0]
         if n_samples < perplexity:
             perplexity = max(1, n_samples // 2)
-            logger.warning(f"Sample size ({n_samples}) small. Adjusting perplexity to {perplexity}.")
+            logger.warning(
+                f"Sample size ({n_samples}) small. Adjusting perplexity to {perplexity}."
+            )
 
         logger.info(f"Running t-SNE (perplexity={perplexity})...")
         tsne = TSNE(
             n_components=2,
             perplexity=perplexity,
-            metric='cosine',
-            init='pca',
-            learning_rate='auto',
+            metric="cosine",
+            init="pca",
+            learning_rate="auto",
             random_state=self.random_state,
-            n_jobs=-1
+            n_jobs=-1,
         )
         return tsne.fit_transform(embeddings)
 
@@ -286,9 +302,9 @@ class InteractiveVisualizer:
         x_col: str,
         y_col: str,
         color_col: str,
-        hover_data: List[str],
+        hover_data: list[str],
         title: str,
-        output_path: str
+        output_path: str,
     ):
         """
         Creates and saves an interactive scatter plot.
@@ -312,13 +328,15 @@ class InteractiveVisualizer:
             title=title,
             template="plotly_dark",
             width=1200,
-            height=800
+            height=800,
         )
-        
+
         # Improve aesthetics
-        fig.update_traces(marker=dict(size=8, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
-        fig.update_layout(legend_title_text='Category')
-        
+        fig.update_traces(
+            marker=dict(size=8, opacity=0.8, line=dict(width=1, color="DarkSlateGrey"))
+        )
+        fig.update_layout(legend_title_text="Category")
+
         fig.write_html(output_path)
         logger.info(f"Saved plot to {output_path}")
 
@@ -332,10 +350,10 @@ class CADAnalysisPipeline:
         self.root_dir = root_dir
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
         self.preprocessor = CADPreprocessor()
         # Using a high-quality CLIP model compatible with sentence-transformers
-        self.extractor = OpenCLIPExtractor(model_name="clip-ViT-L-14") 
+        self.extractor = OpenCLIPExtractor(model_name="clip-ViT-L-14")
         self.reducer = ManifoldReducer()
         self.visualizer = InteractiveVisualizer()
 
@@ -356,10 +374,10 @@ class CADAnalysisPipeline:
             embeddings = np.load(embeddings_path)
             if len(embeddings) != len(df):
                 logger.warning("Cached embeddings count mismatch. Re-computing...")
-                embeddings = self.extractor.encode_images(df['image_path'].tolist())
+                embeddings = self.extractor.encode_images(df["image_path"].tolist())
                 np.save(embeddings_path, embeddings)
         else:
-            embeddings = self.extractor.encode_images(df['image_path'].tolist())
+            embeddings = self.extractor.encode_images(df["image_path"].tolist())
             np.save(embeddings_path, embeddings)
 
         logger.info(f"Embeddings shape: {embeddings.shape}")
@@ -367,25 +385,33 @@ class CADAnalysisPipeline:
         # 3. Dimensionality Reduction
         # UMAP
         umap_coords = self.reducer.fit_transform_umap(embeddings)
-        df['umap_x'] = umap_coords[:, 0]
-        df['umap_y'] = umap_coords[:, 1]
+        df["umap_x"] = umap_coords[:, 0]
+        df["umap_y"] = umap_coords[:, 1]
 
         # t-SNE
         tsne_coords = self.reducer.fit_transform_tsne(embeddings)
-        df['tsne_x'] = tsne_coords[:, 0]
-        df['tsne_y'] = tsne_coords[:, 1]
+        df["tsne_x"] = tsne_coords[:, 0]
+        df["tsne_y"] = tsne_coords[:, 1]
 
         # 4. Visualization
         self.visualizer.plot_scatter(
-            df, 'umap_x', 'umap_y', 'label', ['filename'],
+            df,
+            "umap_x",
+            "umap_y",
+            "label",
+            ["filename"],
             f"CAD Drawings UMAP Projection (Model: CLIP-ViT-L-14, N={len(df)})",
-            str(self.output_dir / "umap_projection.html")
+            str(self.output_dir / "umap_projection.html"),
         )
 
         self.visualizer.plot_scatter(
-            df, 'tsne_x', 'tsne_y', 'label', ['filename'],
+            df,
+            "tsne_x",
+            "tsne_y",
+            "label",
+            ["filename"],
             f"CAD Drawings t-SNE Projection (Model: CLIP-ViT-L-14, N={len(df)})",
-            str(self.output_dir / "tsne_projection.html")
+            str(self.output_dir / "tsne_projection.html"),
         )
 
         logger.info("Pipeline completed successfully.")
@@ -399,18 +425,24 @@ if __name__ == "__main__":
     #     drawing1.pdf
     #   piston/
     #     drawing2.pdf
-    
+
     # Create dummy data for demonstration if 'data' folder doesn't exist
     dummy_data_path = Path("./data/吉輔提供資料")
-    
+
     # Run Pipeline
     # Replace 'data_samples' with your actual data directory
-    pipeline = CADAnalysisPipeline(root_dir="./data/吉輔提供資料", output_dir="analysis_results")
-    
+    pipeline = CADAnalysisPipeline(
+        root_dir="./data/吉輔提供資料", output_dir="analysis_results"
+    )
+
     # Only run if there is data
     if any(dummy_data_path.iterdir()):
-         try:
-             pipeline.run()
-         except Exception as e:
-             logger.error(f"Pipeline run failed (likely due to empty dummy folders): {e}")
-             logger.info("Please populate 'data_samples' with actual PDF files to see results.")
+        try:
+            pipeline.run()
+        except Exception as e:
+            logger.error(
+                f"Pipeline run failed (likely due to empty dummy folders): {e}"
+            )
+            logger.info(
+                "Please populate 'data_samples' with actual PDF files to see results."
+            )

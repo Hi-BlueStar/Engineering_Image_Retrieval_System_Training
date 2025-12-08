@@ -1,68 +1,67 @@
-import sys
 import os
-import uuid
+import sys
 import time
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any
-
-import numpy as np
-from PIL import Image
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLineEdit,
-    QFileDialog,
-    QScrollArea,
-    QFrame,
-    QGridLayout,
-    QProgressBar,
-    QTabWidget,
-    QGraphicsOpacityEffect,
-    QSizePolicy,
-    QPlainTextEdit,
-    QLabel,
-    QPushButton
-)
-from PySide6.QtCore import (
-    Qt,
-    QThread,
-    Signal,
-    QSize,
-    QPropertyAnimation,
-    QEasingCurve,
-    QTimer,
-    QPoint,
-    Property,
-    QEvent,
-)
-from PySide6.QtGui import (
-    QPixmap,
-    QColor,
-    QFont,
-    QPainter,
-    QPen,
-    QBrush,
-    QPainterPath,
-    QDragEnterEvent,
-    QDropEvent,
-)
+from typing import Any
 
 import chromadb
-from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
+import numpy as np
 from chromadb.utils.data_loaders import ImageLoader
+from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
+from PIL import Image
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QEvent,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
 
 # ==========================================
 # 0. EVA 介面主題定義
 # ==========================================
 class EVA:
-    COLOR_BG = "#0a0a0f"          # 深色背景
-    COLOR_PANEL = "#11141d"       # 面板底色
-    COLOR_ORANGE = "#ff8b00"      # EVA 橘
-    COLOR_GREEN = "#6bffb5"       # 同步綠
-    COLOR_TEXT = "#f2f2f2"        # 文字
+    COLOR_BG = "#0a0a0f"  # 深色背景
+    COLOR_PANEL = "#11141d"  # 面板底色
+    COLOR_ORANGE = "#ff8b00"  # EVA 橘
+    COLOR_GREEN = "#6bffb5"  # 同步綠
+    COLOR_TEXT = "#f2f2f2"  # 文字
     COLOR_DIM = "rgba(255, 139, 0, 0.45)"
     COLOR_LINE = "#1f2a3a"
     FONT_MAIN = "Microsoft JhengHei UI"
@@ -156,11 +155,15 @@ QLabel#Subtitle {{
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
 
 
-def get_image_metadata(file_path: Path, root_path: Path) -> Dict[str, Any]:
+def get_image_metadata(file_path: Path, root_path: Path) -> dict[str, Any]:
     """
     依據資料夾結構產生基礎 metadata，方便後續搜尋說明。
     """
-    relative_path = file_path.relative_to(root_path) if root_path in file_path.parents else file_path.name
+    relative_path = (
+        file_path.relative_to(root_path)
+        if root_path in file_path.parents
+        else file_path.name
+    )
     parts = relative_path.parts if isinstance(relative_path, Path) else (relative_path,)
 
     metadata = {
@@ -169,7 +172,9 @@ def get_image_metadata(file_path: Path, root_path: Path) -> Dict[str, Any]:
         "extension": file_path.suffix.lower(),
         "category": "未知",
         "part_id": "未知",
-        "source_folder": str(root_path) if isinstance(root_path, Path) else str(file_path.parent),
+        "source_folder": str(root_path)
+        if isinstance(root_path, Path)
+        else str(file_path.parent),
     }
 
     if isinstance(parts, tuple) and len(parts) >= 2:
@@ -223,8 +228,12 @@ class EvaFrame(QFrame):
         inner_pen.setStyle(Qt.DotLine)
         inner_pen.setWidth(1)
         painter.setPen(inner_pen)
-        painter.drawLine(rect.center().x(), rect.top() + 8, rect.center().x(), rect.bottom() - 8)
-        painter.drawLine(rect.left() + 8, rect.center().y(), rect.right() - 8, rect.center().y())
+        painter.drawLine(
+            rect.center().x(), rect.top() + 8, rect.center().x(), rect.bottom() - 8
+        )
+        painter.drawLine(
+            rect.left() + 8, rect.center().y(), rect.right() - 8, rect.center().y()
+        )
 
 
 class EvaButton(QPushButton):
@@ -277,7 +286,9 @@ class EvaButton(QPushButton):
         w, h = rect.width(), rect.height()
         cut = 10
 
-        current_color = QColor(EVA.COLOR_GREEN if self.hover_progress > 0.3 else self.base_color)
+        current_color = QColor(
+            EVA.COLOR_GREEN if self.hover_progress > 0.3 else self.base_color
+        )
         bg_alpha = int(70 + 120 * self.hover_progress)
         fill_color = QColor(current_color)
         fill_color.setAlpha(bg_alpha)
@@ -302,7 +313,9 @@ class EvaButton(QPushButton):
             painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
             painter.drawLine(0, scan_y, w, scan_y)
 
-        painter.setPen(QPen(Qt.black if self.hover_progress > 0.4 else current_color, 2))
+        painter.setPen(
+            QPen(Qt.black if self.hover_progress > 0.4 else current_color, 2)
+        )
         painter.setFont(self.font())
         painter.drawText(rect, Qt.AlignCenter, self.text())
 
@@ -319,7 +332,9 @@ class DropZone(EvaFrame):
         self.setAcceptDrops(True)
         self.label = QLabel(text, self)
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet(f"color: {color}; font-family: '{EVA.FONT_HEADER}'; font-size: 14px;")
+        self.label.setStyleSheet(
+            f"color: {color}; font-family: '{EVA.FONT_HEADER}'; font-size: 14px;"
+        )
         self.pulse = 0
 
         self.timer = QTimer(self)
@@ -340,7 +355,9 @@ class DropZone(EvaFrame):
         if event.mimeData().hasUrls():
             event.accept()
             self.label.setText("連結建立，放開即可匯入")
-            self.label.setStyleSheet(f"color: {EVA.COLOR_GREEN}; font-family: '{EVA.FONT_HEADER}';")
+            self.label.setStyleSheet(
+                f"color: {EVA.COLOR_GREEN}; font-family: '{EVA.FONT_HEADER}';"
+            )
         else:
             event.ignore()
 
@@ -403,7 +420,9 @@ class PreviewBox(EvaFrame):
         if not self._pixmap:
             return
         target_size = QSize(self.img_label.width(), self.img_label.height())
-        scaled = self._pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled = self._pixmap.scaled(
+            target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
         self.img_label.setPixmap(scaled)
 
 
@@ -412,7 +431,7 @@ class ResultCard(EvaFrame):
     EVA 風格搜尋結果卡片，保持圖片比例並顯示同步率。
     """
 
-    def __init__(self, data: Dict[str, Any]):
+    def __init__(self, data: dict[str, Any]):
         super().__init__(color=EVA.COLOR_DIM)
         self.setFixedSize(230, 270)
 
@@ -422,7 +441,9 @@ class ResultCard(EvaFrame):
 
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignCenter)
-        self.img_label.setStyleSheet(f"background: #000; border: 1px solid {EVA.COLOR_LINE};")
+        self.img_label.setStyleSheet(
+            f"background: #000; border: 1px solid {EVA.COLOR_LINE};"
+        )
         self.img_label.setFixedHeight(150)
 
         pix = QPixmap(data.get("uri", ""))
@@ -465,7 +486,7 @@ class DatabaseWorker(QThread):
     def __init__(self):
         super().__init__()
         self.task = None  # 'init', 'search_text', 'search_image', 'import'
-        self.params: Dict[str, Any] = {}
+        self.params: dict[str, Any] = {}
         self.collection = None
         self.db_path = "./chroma_db_store"
         self.collection_name = "engineering_components_v1"
@@ -477,7 +498,9 @@ class DatabaseWorker(QThread):
             client = chromadb.PersistentClient(path=self.db_path)
             embedding_func = OpenCLIPEmbeddingFunction()
             self.collection = client.get_or_create_collection(
-                name=self.collection_name, embedding_function=embedding_func, data_loader=ImageLoader()
+                name=self.collection_name,
+                embedding_function=embedding_func,
+                data_loader=ImageLoader(),
             )
             return True
         except Exception as e:
@@ -560,7 +583,7 @@ class DatabaseWorker(QThread):
     def _import_images(self):
         if not self.ensure_collection():
             return
-        files: List[str] = self.params.get("files", [])
+        files: list[str] = self.params.get("files", [])
         root_param = self.params.get("root")
         total = len(files)
         if total == 0:
@@ -568,9 +591,9 @@ class DatabaseWorker(QThread):
             return
 
         self.status_signal.emit("入庫", f"開始同步 {total} 張圖片")
-        batch_ids: List[str] = []
-        batch_uris: List[str] = []
-        batch_metas: List[Dict[str, Any]] = []
+        batch_ids: list[str] = []
+        batch_uris: list[str] = []
+        batch_metas: list[dict[str, Any]] = []
         BATCH_SIZE = 24
 
         for idx, fpath in enumerate(files):
@@ -585,7 +608,9 @@ class DatabaseWorker(QThread):
                 batch_metas.append(meta)
 
                 if len(batch_ids) >= BATCH_SIZE:
-                    self.collection.add(ids=batch_ids, uris=batch_uris, metadatas=batch_metas)
+                    self.collection.add(
+                        ids=batch_ids, uris=batch_uris, metadatas=batch_metas
+                    )
                     batch_ids, batch_uris, batch_metas = [], [], []
                     self.import_progress_signal.emit(idx + 1, total)
             except Exception as e:
@@ -640,7 +665,9 @@ class MainWindow(QMainWindow):
     def _build_side_panel(self) -> QWidget:
         panel = QWidget()
         panel.setFixedWidth(380)
-        panel.setStyleSheet(f"background: {EVA.COLOR_PANEL}; border: 2px solid {EVA.COLOR_LINE};")
+        panel.setStyleSheet(
+            f"background: {EVA.COLOR_PANEL}; border: 2px solid {EVA.COLOR_LINE};"
+        )
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -672,7 +699,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         label_text = QLabel("文字檢索")
-        label_text.setStyleSheet(f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';")
+        label_text.setStyleSheet(
+            f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';"
+        )
         self.input_text = QLineEdit()
         self.input_text.setPlaceholderText("輸入要搜尋的零件描述、型號、特徵…")
         self.input_text.returnPressed.connect(self.on_text_search)
@@ -682,7 +711,9 @@ class MainWindow(QMainWindow):
         btn_text.clicked.connect(self.on_text_search)
 
         label_img = QLabel("以圖搜圖")
-        label_img.setStyleSheet(f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';")
+        label_img.setStyleSheet(
+            f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';"
+        )
 
         self.search_drop = DropZone("拖曳圖片到此")
         self.search_drop.setFixedHeight(110)
@@ -715,7 +746,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         info = QLabel("資料入庫")
-        info.setStyleSheet(f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';")
+        info.setStyleSheet(
+            f"color: {EVA.COLOR_TEXT}; font-family: '{EVA.FONT_HEADER}';"
+        )
 
         self.import_drop = DropZone("拖曳資料夾或多張圖片到此")
         self.import_drop.setFixedHeight(110)
@@ -821,21 +854,25 @@ class MainWindow(QMainWindow):
             if level in ["搜尋", "入庫", "提示"]
             else "#ff4d4f"
         )
-        self.log_box.appendHtml(f"<span style='color:{color}'>[{timestamp}] {level}｜{msg}</span>")
+        self.log_box.appendHtml(
+            f"<span style='color:{color}'>[{timestamp}] {level}｜{msg}</span>"
+        )
         self.status_lbl.setText(f"狀態：{level}")
         self.status_lbl.setStyleSheet(
             f"font-family: '{EVA.FONT_HEADER}'; font-size: 22px; color: {color};"
         )
 
     def choose_search_image(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "選取圖片", ".", "圖片檔 (*.png *.jpg *.jpeg *.bmp *.webp)")
+        fname, _ = QFileDialog.getOpenFileName(
+            self, "選取圖片", ".", "圖片檔 (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
         if fname:
             self.current_img_path = fname
             self.preview_box.set_image(fname)
             self.search_drop.label.setText(Path(fname).name)
             self.log_status("搜尋", f"已選取圖片：{Path(fname).name}")
 
-    def on_search_drop(self, paths: List[str]):
+    def on_search_drop(self, paths: list[str]):
         images = self._collect_image_files(paths)
         if not images:
             self.log_status("提示", "拖曳內容中沒有可用圖片")
@@ -844,7 +881,7 @@ class MainWindow(QMainWindow):
         self.preview_box.set_image(images[0])
         self.log_status("搜尋", f"載入圖片：{Path(images[0]).name}")
 
-    def on_import_drop(self, paths: List[str]):
+    def on_import_drop(self, paths: list[str]):
         files = self._collect_image_files(paths, recursive=True)
         if not files:
             self.log_status("提示", "未偵測到可匯入的圖片")
@@ -901,11 +938,13 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
 
-    def display_results(self, results: List[Dict[str, Any]]):
+    def display_results(self, results: list[dict[str, Any]]):
         self.clear_results()
         if not results:
             empty = QLabel("沒有找到相符資料。")
-            empty.setStyleSheet(f"color: {EVA.COLOR_TEXT}; font-size: 16px; padding: 20px;")
+            empty.setStyleSheet(
+                f"color: {EVA.COLOR_TEXT}; font-size: 16px; padding: 20px;"
+            )
             self.result_grid.addWidget(empty, 0, 0)
             return
 
@@ -938,7 +977,7 @@ class MainWindow(QMainWindow):
             root = folder
             self.start_import(files, root=root)
 
-    def start_import(self, files: List[str], root: str = None):
+    def start_import(self, files: list[str], root: str = None):
         if not files:
             self.log_status("提示", "沒有可匯入的檔案")
             return
@@ -961,8 +1000,10 @@ class MainWindow(QMainWindow):
         self.import_status.setText(f"入庫進度：{current}/{total}")
 
     # ---------- 輔助 ----------
-    def _collect_image_files(self, paths: List[str], recursive: bool = False) -> List[str]:
-        collected: List[str] = []
+    def _collect_image_files(
+        self, paths: list[str], recursive: bool = False
+    ) -> list[str]:
+        collected: list[str] = []
         for raw in paths:
             p = Path(raw)
             if p.is_dir() and recursive:
@@ -973,7 +1014,7 @@ class MainWindow(QMainWindow):
                 collected.append(str(p))
         return collected
 
-    def _determine_root(self, files: List[str]) -> str:
+    def _determine_root(self, files: list[str]) -> str:
         try:
             return os.path.commonpath(files)
         except Exception:

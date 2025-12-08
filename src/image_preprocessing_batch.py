@@ -1,31 +1,34 @@
-    # batch_runner.py
-# -*- coding: utf-8 -*-
+# batch_runner.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Iterable, List, Tuple, Dict, Optional, Union
-import os
-import time
 import json
-import threading
+import os
 import queue
+import threading
+import time
 import traceback
-
 import tracemalloc
+from dataclasses import dataclass
+from pathlib import Path
+
+from rich import box
 
 # 第三方：視覺處理模組在 image_preprocessing.py 內部使用
 # 這裡只需要 rich/psutil/pynvml（選用）
 from rich.console import Console
 from rich.progress import (
-    Progress, SpinnerColumn, BarColumn, TextColumn,
-    TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn,
-    TaskProgressColumn, DownloadColumn
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
-from rich.table import Table
-from rich.panel import Panel
 from rich.rule import Rule
-from rich import box
+from rich.table import Table
+
 
 try:
     import psutil  # 強烈建議安裝
@@ -35,18 +38,20 @@ except Exception:
 # GPU 監控（選用）
 try:
     import pynvml
+
     _NVML_OK = True
 except Exception:
     _NVML_OK = False
 
 # 匯入你的主流程函式
-from image_preprocessing import run_pipeline, DEFAULTS as PIPE_DEFAULTS  # type: ignore
+from image_preprocessing import DEFAULTS as PIPE_DEFAULTS
+from image_preprocessing import run_pipeline  # type: ignore
 
 
 # ================================
 # 設定與工具
 # ================================
-def _fmt_bytes(n: Optional[int]) -> str:
+def _fmt_bytes(n: int | None) -> str:
     if n is None:
         return "N/A"
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -61,13 +66,13 @@ def _fmt_bytes(n: Optional[int]) -> str:
 @dataclass
 class BatchConfig:
     # 掃描與輸出
-    input_dir: Union[str, Path]
-    output_root: Union[str, Path] = "results_batch"
-    patterns: Tuple[str, ...] = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
+    input_dir: str | Path
+    output_root: str | Path = "results_batch"
+    patterns: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
     recursive: bool = True
     per_image_outdir: str = "{stem}"  # 可用 {stem} / {name} / {parent} (此設定已被 _compute_out_dir 修改覆蓋)
-    skip_existing: bool = True        # 若輸出下已存在 merged_all_large.png 就略過
-    max_workers: int = 1              # >1 啟用多執行緒（I/O 為主）
+    skip_existing: bool = True  # 若輸出下已存在 merged_all_large.png 就略過
+    max_workers: int = 1  # >1 啟用多執行緒（I/O 為主）
 
     # merge_subcomponents_with_topology 參數
     top_n: int = PIPE_DEFAULTS["TOP_N"]
@@ -77,7 +82,7 @@ class BatchConfig:
 
     # 報表
     write_report_json: bool = True
-    report_json_path: Optional[Union[str, Path]] = None  # 預設 output_root / "batch_report.json"
+    report_json_path: str | Path | None = None  # 預設 output_root / "batch_report.json"
 
     # 監控
     monitor_interval_sec: float = 0.5
@@ -89,17 +94,23 @@ class FileStat:
     path: Path
     ok: bool
     duration_sec: float
-    rss_delta: Optional[int] = None
-    py_peak_bytes: Optional[int] = None
-    error: Optional[str] = None
-    output_dir: Optional[Path] = None
+    rss_delta: int | None = None
+    py_peak_bytes: int | None = None
+    error: str | None = None
+    output_dir: Path | None = None
 
 
 # ================================
 # 資源即時監控（背景執行緒）
 # ================================
 class ResourceMonitor:
-    def __init__(self, progress: Progress, task_id: int, interval: float = 0.5, enable_gpu: bool = True):
+    def __init__(
+        self,
+        progress: Progress,
+        task_id: int,
+        interval: float = 0.5,
+        enable_gpu: bool = True,
+    ):
         self.progress = progress
         self.task_id = task_id
         self.interval = max(0.2, float(interval))
@@ -110,8 +121,10 @@ class ResourceMonitor:
         if self.enable_gpu:
             try:
                 pynvml.nvmlInit()
-                self._gpu_handles = [pynvml.nvmlDeviceGetHandleByIndex(i)
-                                     for i in range(pynvml.nvmlDeviceGetCount())]
+                self._gpu_handles = [
+                    pynvml.nvmlDeviceGetHandleByIndex(i)
+                    for i in range(pynvml.nvmlDeviceGetCount())
+                ]
             except Exception:
                 self.enable_gpu = False
 
@@ -136,7 +149,11 @@ class ResourceMonitor:
                 ram = psutil.virtual_memory().percent
                 rss = proc.memory_info().rss if proc else None
                 io = psutil.disk_io_counters()
-                io_str = f"R:{_fmt_bytes(io.read_bytes)} W:{_fmt_bytes(io.write_bytes)}" if io else "IO:N/A"
+                io_str = (
+                    f"R:{_fmt_bytes(io.read_bytes)} W:{_fmt_bytes(io.write_bytes)}"
+                    if io
+                    else "IO:N/A"
+                )
             else:
                 cpu = ram = None
                 rss = None
@@ -160,8 +177,8 @@ class ResourceMonitor:
             text = (
                 f"[bold]系統資源[/] | "
                 f"CPU: {cpu:.0f}% | RAM: {ram:.0f}% | RSS: {_fmt_bytes(rss)} | {io_str} | {gpu_str}"
-                if psutil else
-                f"[bold]系統資源[/] | psutil 未安裝"
+                if psutil
+                else "[bold]系統資源[/] | psutil 未安裝"
             )
             # 更新進度列的描述
             self.progress.update(self.task_id, description=text)
@@ -171,7 +188,7 @@ class ResourceMonitor:
 # ================================
 # 檔案掃描
 # ================================
-def _gather_images(cfg: BatchConfig) -> List[Path]:
+def _gather_images(cfg: BatchConfig) -> list[Path]:
     root = Path(cfg.input_dir)
     if not root.exists():
         raise FileNotFoundError(f"找不到資料夾：{root}")
@@ -208,7 +225,7 @@ def _already_done(out_dir: Path) -> bool:
 # ================================
 # 核心：批次處理
 # ================================
-def process_folder(cfg: BatchConfig) -> Dict:
+def process_folder(cfg: BatchConfig) -> dict:
     """
     對資料夾內所有圖片執行 run_pipeline。
     回傳：包含彙整統計與每檔紀錄的 dict（也可選擇輸出 JSON 報表）。
@@ -219,7 +236,9 @@ def process_folder(cfg: BatchConfig) -> Dict:
 
     files = _gather_images(cfg)
     if not files:
-        console.print(f"[yellow]資料夾內未找到圖片：{cfg.input_dir}（副檔名：{cfg.patterns}）[/]")
+        console.print(
+            f"[yellow]資料夾內未找到圖片：{cfg.input_dir}（副檔名：{cfg.patterns}）[/]"
+        )
         return {"count": 0, "ok": 0, "failed": 0, "items": []}
 
     console.print(Rule("[bold cyan]批次處理開始[/]"))
@@ -240,13 +259,17 @@ def process_folder(cfg: BatchConfig) -> Dict:
         expand=True,
     )
 
-    results: List[FileStat] = []
+    results: list[FileStat] = []
 
     with progress:
         # 系統資源監控 Task（描述會持續被更新）
         monitor_task = progress.add_task("初始化系統資源監控中…", total=None)
-        monitor = ResourceMonitor(progress, monitor_task, interval=cfg.monitor_interval_sec,
-                                  enable_gpu=cfg.enable_gpu_monitor)
+        monitor = ResourceMonitor(
+            progress,
+            monitor_task,
+            interval=cfg.monitor_interval_sec,
+            enable_gpu=cfg.enable_gpu_monitor,
+        )
         monitor.start()
 
         # 掃描 Task
@@ -258,7 +281,7 @@ def process_folder(cfg: BatchConfig) -> Dict:
         progress.update(scan_task, advance=len(files))  # 掃描立即完成
 
         # 執行：可選多執行緒（I/O 為主，OpenCV/NumPy 常釋放 GIL）
-        q: "queue.Queue[Path]" = queue.Queue()
+        q: queue.Queue[Path] = queue.Queue()
         for p in files:
             q.put(p)
 
@@ -273,12 +296,22 @@ def process_folder(cfg: BatchConfig) -> Dict:
 
                 out_dir = _compute_out_dir(cfg, img_path)
                 if cfg.skip_existing and _already_done(out_dir):
-                    results.append(FileStat(
-                        path=img_path, ok=True, duration_sec=0.0,
-                        rss_delta=None, py_peak_bytes=None,
-                        error=None, output_dir=out_dir
-                    ))
-                    progress.update(work_task, advance=1, description=f"略過（已存在）: {img_path.name}")
+                    results.append(
+                        FileStat(
+                            path=img_path,
+                            ok=True,
+                            duration_sec=0.0,
+                            rss_delta=None,
+                            py_peak_bytes=None,
+                            error=None,
+                            output_dir=out_dir,
+                        )
+                    )
+                    progress.update(
+                        work_task,
+                        advance=1,
+                        description=f"略過（已存在）: {img_path.name}",
+                    )
                     continue
 
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -306,28 +339,48 @@ def process_folder(cfg: BatchConfig) -> Dict:
                     )
                 except Exception as e:
                     ok = False
-                    err_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}"
+                    err_msg = (
+                        f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}"
+                    )
                 finally:
                     duration = time.perf_counter() - t0
                     current, peak = tracemalloc.get_traced_memory()
                     if started_here:
                         tracemalloc.stop()
-                    rss_after = proc.memory_info().rss if proc else None if psutil else None
-                    rss_delta = (rss_after - rss_before) if (psutil and rss_before is not None and rss_after is not None) else None
+                    rss_after = (
+                        proc.memory_info().rss if proc else None if psutil else None
+                    )
+                    rss_delta = (
+                        (rss_after - rss_before)
+                        if (psutil and rss_before is not None and rss_after is not None)
+                        else None
+                    )
 
-                results.append(FileStat(
-                    path=img_path, ok=ok, duration_sec=duration,
-                    rss_delta=rss_delta, py_peak_bytes=peak,
-                    error=err_msg, output_dir=out_dir
-                ))
+                results.append(
+                    FileStat(
+                        path=img_path,
+                        ok=ok,
+                        duration_sec=duration,
+                        rss_delta=rss_delta,
+                        py_peak_bytes=peak,
+                        error=err_msg,
+                        output_dir=out_dir,
+                    )
+                )
 
                 # 更新進度列
                 if ok:
-                    progress.update(work_task, advance=1, description=f"完成: {img_path.name}")
+                    progress.update(
+                        work_task, advance=1, description=f"完成: {img_path.name}"
+                    )
                 else:
-                    progress.update(work_task, advance=1, description=f"[red]失敗[/]: {img_path.name}")
+                    progress.update(
+                        work_task,
+                        advance=1,
+                        description=f"[red]失敗[/]: {img_path.name}",
+                    )
 
-        threads: List[threading.Thread] = []
+        threads: list[threading.Thread] = []
         n_workers = max(1, int(cfg.max_workers))
         for _ in range(n_workers):
             t = threading.Thread(target=worker, daemon=True)
@@ -361,7 +414,9 @@ def process_folder(cfg: BatchConfig) -> Dict:
 
     console.print(Rule())
     console.print(table)
-    console.print(f"[b]總計[/]: {len(results)} | [green]成功[/]: {ok_cnt} | [red]失敗[/]: {fail_cnt}")
+    console.print(
+        f"[b]總計[/]: {len(results)} | [green]成功[/]: {ok_cnt} | [red]失敗[/]: {fail_cnt}"
+    )
 
     # 報表輸出（可選）
     report = {
@@ -390,11 +445,15 @@ def process_folder(cfg: BatchConfig) -> Dict:
             "recursive": cfg.recursive,
             "skip_existing": cfg.skip_existing,
             "max_workers": cfg.max_workers,
-        }
+        },
     }
 
     if cfg.write_report_json:
-        json_path = Path(cfg.report_json_path) if cfg.report_json_path else Path(cfg.output_root) / "batch_report.json"
+        json_path = (
+            Path(cfg.report_json_path)
+            if cfg.report_json_path
+            else Path(cfg.output_root) / "batch_report.json"
+        )
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         console.print(f"[dim]已輸出報表：[/]{json_path.resolve()}")
@@ -406,7 +465,10 @@ def process_folder(cfg: BatchConfig) -> Dict:
 # ================================
 # 範例用法（非 CLI，直接以程式呼叫）
 # ================================
-def demo(input_dir: str = "./data/engineering_images_100dpi_flat/train", output_root: str = "./results/batch"):
+def demo(
+    input_dir: str = "./data/engineering_images_100dpi_flat/train",
+    output_root: str = "./results/batch",
+):
     cfg = BatchConfig(
         input_dir=input_dir,
         output_root=output_root,
@@ -414,13 +476,13 @@ def demo(input_dir: str = "./data/engineering_images_100dpi_flat/train", output_
         recursive=True,
         per_image_outdir="{stem}",  # 註：此設定已無作用，輸出會直接到 output_root
         skip_existing=True,
-        max_workers=8,        # 若 I/O 多可嘗試 >1
+        max_workers=8,  # 若 I/O 多可嘗試 >1
         top_n=8,
         remove_largest=True,
         iterations=1,  # ⇠ 可視雜訊調整（例如 3、5、10…）
         save_steps=False,
         write_report_json=True,
-        report_json_path=None,      # None 則寫到 output_root/batch_report.json
+        report_json_path=None,  # None 則寫到 output_root/batch_report.json
         monitor_interval_sec=0.5,
         enable_gpu_monitor=True,
     )
@@ -428,12 +490,35 @@ def demo(input_dir: str = "./data/engineering_images_100dpi_flat/train", output_
 
 
 if __name__ == "__main__":
-    demo(input_dir="./data/engineering_images_100dpi_flat/train", output_root="./results/batch/engineering_images_100dpi_flat/train")
-    demo(input_dir="./data/engineering_images_100dpi_flat/val", output_root="./results/batch/engineering_images_100dpi_flat/val")
-    demo(input_dir="./data/engineering_images_200dpi_flat/train", output_root="./results/batch/engineering_images_200dpi_flat/train")
-    demo(input_dir="./data/engineering_images_200dpi_flat/val", output_root="./results/batch/engineering_images_200dpi_flat/val")
-    demo(input_dir="./data/engineering_images_400dpi_flat/train", output_root="./results/batch/engineering_images_400dpi_flat/train")
-    demo(input_dir="./data/engineering_images_400dpi_flat/val", output_root="./results/batch/engineering_images_400dpi_flat/val")
-    demo(input_dir="./data/engineering_images_600dpi_flat/train", output_root="./results/batch/engineering_images_600dpi_flat/train")
-    demo(input_dir="./data/engineering_images_600dpi_flat/val", output_root="./results/batch/engineering_images_600dpi_flat/val")
-
+    demo(
+        input_dir="./data/engineering_images_100dpi_flat/train",
+        output_root="./results/batch/engineering_images_100dpi_flat/train",
+    )
+    demo(
+        input_dir="./data/engineering_images_100dpi_flat/val",
+        output_root="./results/batch/engineering_images_100dpi_flat/val",
+    )
+    demo(
+        input_dir="./data/engineering_images_200dpi_flat/train",
+        output_root="./results/batch/engineering_images_200dpi_flat/train",
+    )
+    demo(
+        input_dir="./data/engineering_images_200dpi_flat/val",
+        output_root="./results/batch/engineering_images_200dpi_flat/val",
+    )
+    demo(
+        input_dir="./data/engineering_images_400dpi_flat/train",
+        output_root="./results/batch/engineering_images_400dpi_flat/train",
+    )
+    demo(
+        input_dir="./data/engineering_images_400dpi_flat/val",
+        output_root="./results/batch/engineering_images_400dpi_flat/val",
+    )
+    demo(
+        input_dir="./data/engineering_images_600dpi_flat/train",
+        output_root="./results/batch/engineering_images_600dpi_flat/train",
+    )
+    demo(
+        input_dir="./data/engineering_images_600dpi_flat/val",
+        output_root="./results/batch/engineering_images_600dpi_flat/val",
+    )

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 SimSiam (PyTorch 版)
 - 提供最小可用的模型/擴增/訓練迴圈與推論工具
@@ -51,15 +50,15 @@ References:
 """
 
 from pathlib import Path
-from typing import List, Tuple, Optional, Union, Iterable
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
 import torchvision.models as models
+import torchvision.transforms as T
 from PIL import Image, ImageFile
+from torch.utils.data import DataLoader, Dataset
+
 
 # 防止讀取損壞圖片時報錯
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -69,9 +68,10 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # Geometry-Aware Augmentation / Dataset
 # -----------------------------------------------------------------------------
 
+
 class GeometryAwareTransform:
     """針對工程圖 (CAD/Line Art) 設計的幾何敏感資料增強類別。
-    
+
     不同於自然影像，工程圖依賴線條與拓撲結構。
     此類別移除了模糊與色彩抖動，並增強了對旋轉、透視與變形的魯棒性。
 
@@ -82,7 +82,9 @@ class GeometryAwareTransform:
     4. RandomFlip: 學習鏡像不變性。
     """
 
-    def __init__(self, img_size: int = 224, mean: List[float] = [0.5], std: List[float] = [0.5]):
+    def __init__(
+        self, img_size: int = 224, mean: list[float] = [0.5], std: list[float] = [0.5]
+    ):
         """初始化幾何增強策略。
 
         參數:
@@ -96,36 +98,41 @@ class GeometryAwareTransform:
     def _build(self) -> None:
         """構建 Transform 管道。"""
         # 定義幾何變換序列
-        self.transform = T.Compose([
-            # 隨機裁切：CAD 圖可能在不同縮放比例下具有相似特徵
-            # scale 下限設為 0.4 避免切得太碎導致丟失整體幾何結構
-            T.RandomResizedCrop(self.img_size, scale=(0.4, 1.0), interpolation=T.InterpolationMode.BICUBIC),
-            
-            # 幾何變換：隨機水平與垂直翻轉 (零件常具對稱性)
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomVerticalFlip(p=0.5),
-            
-            # 關鍵：隨機仿射變換 (旋轉 +/- 90度, 平移, 縮放, 剪切)
-            # 模擬圖紙不正、偏移或比例不一的情況
-            T.RandomApply([
-                T.RandomAffine(
-                    degrees=90, 
-                    translate=(0.1, 0.1), 
-                    scale=(0.8, 1.2), 
-                    shear=10,
-                    interpolation=T.InterpolationMode.BILINEAR
-                )
-            ], p=0.5),
-            
-            # 關鍵：透視變換 (模擬圖紙未放平的情況)
-            T.RandomPerspective(distortion_scale=0.2, p=0.3),
-            
-            # 轉為 Tensor 並標準化
-            T.ToTensor(),
-            T.Normalize(mean=mean, std=std)
-        ])
+        self.transform = T.Compose(
+            [
+                # 隨機裁切：CAD 圖可能在不同縮放比例下具有相似特徵
+                # scale 下限設為 0.4 避免切得太碎導致丟失整體幾何結構
+                T.RandomResizedCrop(
+                    self.img_size,
+                    scale=(0.4, 1.0),
+                    interpolation=T.InterpolationMode.BICUBIC,
+                ),
+                # 幾何變換：隨機水平與垂直翻轉 (零件常具對稱性)
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomVerticalFlip(p=0.5),
+                # 關鍵：隨機仿射變換 (旋轉 +/- 90度, 平移, 縮放, 剪切)
+                # 模擬圖紙不正、偏移或比例不一的情況
+                T.RandomApply(
+                    [
+                        T.RandomAffine(
+                            degrees=90,
+                            translate=(0.1, 0.1),
+                            scale=(0.8, 1.2),
+                            shear=10,
+                            interpolation=T.InterpolationMode.BILINEAR,
+                        )
+                    ],
+                    p=0.5,
+                ),
+                # 關鍵：透視變換 (模擬圖紙未放平的情況)
+                T.RandomPerspective(distortion_scale=0.2, p=0.3),
+                # 轉為 Tensor 並標準化
+                T.ToTensor(),
+                T.Normalize(mean=mean, std=std),
+            ]
+        )
 
-    def __call__(self, x: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, x: Image.Image) -> tuple[torch.Tensor, torch.Tensor]:
         """對輸入圖片應用兩次獨立的幾何增強。
 
         參數:
@@ -140,7 +147,9 @@ class GeometryAwareTransform:
         return v1, v2
 
 
-def make_inference_transform(img_size: int = 224, mean: List[float] = [0.5], std: List[float] = [0.5]) -> T.Compose:
+def make_inference_transform(
+    img_size: int = 224, mean: list[float] = [0.5], std: list[float] = [0.5]
+) -> T.Compose:
     """建立推論用的確定性 Transform (無隨機增強)。
 
     參數:
@@ -151,12 +160,14 @@ def make_inference_transform(img_size: int = 224, mean: List[float] = [0.5], std
     返回:
         T.Compose: 轉換組合 (Resize -> CenterCrop -> ToTensor -> Normalize)。
     """
-    return T.Compose([
-        T.Resize(int(img_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=mean, std=std)
-    ])
+    return T.Compose(
+        [
+            T.Resize(int(img_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(img_size),
+            T.ToTensor(),
+            T.Normalize(mean=mean, std=std),
+        ]
+    )
 
 
 class UnlabeledImages(Dataset):
@@ -167,8 +178,8 @@ class UnlabeledImages(Dataset):
         transform (Callable): 增強函數 (產生兩視角)。
         grayscale (bool): 是否強制轉為單通道灰階圖。
     """
-    
-    def __init__(self, paths: List[Path], transform, grayscale: bool = True):
+
+    def __init__(self, paths: list[Path], transform, grayscale: bool = True):
         self.paths = list(paths)
         self.transform = transform
         self.grayscale = grayscale
@@ -186,7 +197,7 @@ class UnlabeledImages(Dataset):
                 img = img.convert("L")  # L mode = 8-bit pixels, black and white
             else:
                 img = img.convert("RGB")
-            
+
             return self.transform(img)
         except Exception as e:
             # 遇到壞圖時的簡單處理：印出錯誤並拋出，建議在外部先做資料清洗
@@ -198,7 +209,14 @@ class UnlabeledImages(Dataset):
 # SimSiam Model
 # -----------------------------------------------------------------------------
 
-def _mlp(in_dim: int, hidden_dim: int, out_dim: int, bn_last: bool = True, dropout: float = 0.0) -> nn.Sequential:
+
+def _mlp(
+    in_dim: int,
+    hidden_dim: int,
+    out_dim: int,
+    bn_last: bool = True,
+    dropout: float = 0.0,
+) -> nn.Sequential:
     """輔助函數：建立多層感知機 (MLP) 區塊。
 
     通常用於 Projector 或 Predictor。結構為 Linear -> BN -> ReLU -> ...
@@ -233,19 +251,19 @@ class SimSiam(nn.Module):
         x -> Backbone -> f (features)
         f -> Projector -> z (embeddings)
         z -> Predictor -> p (predictions)
-    
+
     機制：
         Loss = D(p1, stop_gradient(z2)) + D(p2, stop_gradient(z1))
     """
-    
+
     def __init__(
         self,
-        backbone: str = 'resnet18',
+        backbone: str = "resnet18",
         proj_dim: int = 2048,
         pred_hidden: int = 512,
         dropout: float = 0.0,
         pretrained: bool = False,
-        in_channels: int = 1  # 支援灰階輸入
+        in_channels: int = 1,  # 支援灰階輸入
     ):
         """初始化模型。
 
@@ -260,10 +278,14 @@ class SimSiam(nn.Module):
         super().__init__()
 
         # 1. 建立 Backbone
-        if backbone == 'resnet18':
-            net = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
-        elif backbone == 'resnet50':
-            net = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1 if pretrained else None)
+        if backbone == "resnet18":
+            net = models.resnet18(
+                weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+            )
+        elif backbone == "resnet50":
+            net = models.resnet50(
+                weights=models.ResNet50_Weights.IMAGENET1K_V1 if pretrained else None
+            )
         else:
             raise NotImplementedError(f"Unsupported backbone: {backbone}")
 
@@ -272,9 +294,12 @@ class SimSiam(nn.Module):
             # ResNet 的 conv1 原始結構是 (64, 3, 7, 7, stride=2, padding=3)，需改為 (64, in_channels, 7, 7)
             old_conv = net.conv1
             new_conv = nn.Conv2d(
-                in_channels, old_conv.out_channels,
-                kernel_size=old_conv.kernel_size, stride=old_conv.stride,
-                padding=old_conv.padding, bias=old_conv.bias
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=old_conv.bias,
             )
             # 若載入預訓練權重，可將 RGB 權重平均化到單通道 (由使用者自行決定是否需要更複雜的遷移策略)
             if pretrained and in_channels == 1:
@@ -282,9 +307,9 @@ class SimSiam(nn.Module):
                     # Sum over channel dimension (dim 1) and divide by 3
                     # shape: [64, 3, 7, 7] -> [64, 1, 7, 7]
                     new_conv.weight[:] = old_conv.weight.sum(dim=1, keepdim=True) / 3.0
-            
+
             net.conv1 = new_conv
-        
+
         # 取得 Backbone 輸出特徵維度 (ResNet50 為 2048, ResNet18 為 512)
         feat_dim = net.fc.in_features
         # 移除原始分類用的全連接層 (fc)
@@ -329,14 +354,14 @@ class SimSiam(nn.Module):
         # 共享 Backbone 與 Projector
         f1 = self.backbone(x1)
         f2 = self.backbone(x2)
-        
+
         z1 = self.projector(f1)
         z2 = self.projector(f2)
-        
+
         # Predictor 轉換
         p1 = self.predictor(z1)
         p2 = self.predictor(z2)
-        
+
         # 關鍵：回傳 detach 的 z，在 Loss 計算時作為常數目標 (Stop-Gradient)
         return p1, p2, z1.detach(), z2.detach()
 
@@ -345,7 +370,7 @@ def D(p: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
     """SimSiam 損失函數：負餘弦相似度 (Negative Cosine Similarity)。
 
     公式:
-    $$ \mathcal{L} = - \frac{p}{\|p\|_2} \cdot \frac{z}{\|z\|_2} $$
+    $$ \\mathcal{L} = - \frac{p}{\\|p\\|_2} \\cdot \frac{z}{\\|z\\|_2} $$
 
     參數:
         p: Predictor 輸出的預測向量 [B, Dim]。
@@ -358,14 +383,17 @@ def D(p: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
     p = F.normalize(p, dim=1)
     z = F.normalize(z, dim=1)
     # 點積後取平均並加負號
-    return - (p * z).sum(dim=1).mean()
+    return -(p * z).sum(dim=1).mean()
 
 
 # -----------------------------------------------------------------------------
 # Train / Eval Utilities
 # -----------------------------------------------------------------------------
 
-def train_one_epoch(model: SimSiam, loader: DataLoader, optimizer, scaler, device: str) -> float:
+
+def train_one_epoch(
+    model: SimSiam, loader: DataLoader, optimizer, scaler, device: str
+) -> float:
     """執行一個 Epoch 的訓練。
 
     Args:
@@ -381,12 +409,16 @@ def train_one_epoch(model: SimSiam, loader: DataLoader, optimizer, scaler, devic
     model.train()
     total_loss = 0.0
     num_batches = 0
-    
+
     # 判斷是否啟用 AMP
-    use_amp = scaler is not None and str(device).startswith('cuda')
+    use_amp = scaler is not None and str(device).startswith("cuda")
     # 兼容舊版與新版 PyTorch 的 autocast
-    if hasattr(torch, 'amp'):
-        amp_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16) if use_amp else torch.no_grad() # no_grad is dummy here
+    if hasattr(torch, "amp"):
+        amp_ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+            if use_amp
+            else torch.no_grad()
+        )  # no_grad is dummy here
     else:
         amp_ctx = torch.cuda.amp.autocast(enabled=use_amp)
 
@@ -394,8 +426,8 @@ def train_one_epoch(model: SimSiam, loader: DataLoader, optimizer, scaler, devic
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
 
-        optimizer.zero_grad(set_to_none=True)# set_to_none 稍微快一點
-        
+        optimizer.zero_grad(set_to_none=True)  # set_to_none 稍微快一點
+
         with amp_ctx:
             # p1 預測 z2, p2 預測 z1
             p1, p2, z1, z2 = model(v1, v2)
@@ -422,7 +454,7 @@ def evaluate(model: SimSiam, loader: DataLoader, device: str) -> float:
     model.eval()
     total_loss = 0.0
     num_batches = 0
-    
+
     for v1, v2 in loader:
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
@@ -438,9 +470,11 @@ def evaluate(model: SimSiam, loader: DataLoader, device: str) -> float:
 # Efficient Inference Utilities
 # -----------------------------------------------------------------------------
 
+
 class _InferenceDataset(Dataset):
     """內部類別：用於將路徑列表封裝為 Dataset，供推論 DataLoader 使用。"""
-    def __init__(self, paths: List[Path], transform, grayscale: bool = True):
+
+    def __init__(self, paths: list[Path], transform, grayscale: bool = True):
         self.paths = paths
         self.transform = transform
         self.grayscale = grayscale
@@ -462,29 +496,30 @@ class _InferenceDataset(Dataset):
             # 此處簡單處理：回傳一個全零的 Dummy Tensor (須確保維度與正常圖片一致)
             # 這裡我們假設 transform 最終會輸出 [C, H, W]
             # 若發生錯誤，後續處理需具備過濾機制
-            return torch.zeros(1, 1, 1) # 維度將在 DataLoader 中被檢測
+            return torch.zeros(1, 1, 1)  # 維度將在 DataLoader 中被檢測
 
 
 # -----------------------------------------------------------------------------
 # Embed / Similarity
 # -----------------------------------------------------------------------------
 
+
 @torch.no_grad()
 def embed_images(
     model: SimSiam,
-    paths: List[Path],
+    paths: list[Path],
     transform: T.Compose,
     device: str,
     batch_size: int = 64,
-    num_workers: int = 4
+    num_workers: int = 4,
 ) -> torch.Tensor:
     """提取圖片特徵向量 (記憶體優化版)。
-    
+
     使用 DataLoader 進行批次讀取與推論，避免一次性將所有圖片載入記憶體。
 
     使用 Backbone + Projector 輸出特徵 (z)。
     注意：回傳前會進行 L2 Normalize，方便後續直接用 Dot Product 計算 Cosine Similarity。
-    
+
 
     參數:
         model (SimSiam): 已載入權重的 SimSiam 模型。
@@ -501,39 +536,39 @@ def embed_images(
     # 判斷輸入是否為灰階 (根據 transform 的 Normalize 參數或模型設定推斷較難，
     # 這裡假設使用者在呼叫端已配置好 transform，Dataset 僅負責讀圖)
     # 為保險起見，我們檢查 model.backbone.conv1.in_channels
-    grayscale = (model.backbone.conv1.in_channels == 1)
+    grayscale = model.backbone.conv1.in_channels == 1
 
     dataset = _InferenceDataset(paths, transform, grayscale=grayscale)
     loader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers, 
-        pin_memory=True
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
     embs_list = []
-    
+
     for imgs in loader:
         # 過濾讀取錯誤的圖片 (簡單檢查維度)
-        if imgs.dim() < 4: 
+        if imgs.dim() < 4:
             # 若發生錯誤，填補零向量 (保持索引對齊)
             # 實際應用建議在外部先過濾壞圖
             bs = imgs.shape[0]
             # predictor[-1] 是最後一層 Linear
-            out_dim = model.predictor[-1].out_features 
+            out_dim = model.predictor[-1].out_features
             embs_list.append(torch.zeros(bs, out_dim))
             continue
-            
+
         imgs = imgs.to(device)
-        
+
         # 提取特徵：Backbone -> Projector -> Normalize
         # 注意：SimSiam 論文中提到檢索可用 Projector 輸出，亦可用 Backbone 輸出。
         # 這裡為了與訓練目標一致，使用 Projector 輸出。
         f = model.backbone(imgs)
         z = model.projector(f)
-        z = F.normalize(z, dim=1) # L2 Normalize
-        
+        z = F.normalize(z, dim=1)  # L2 Normalize
+
         embs_list.append(z.cpu())
 
     if not embs_list:
@@ -541,41 +576,39 @@ def embed_images(
 
     return torch.cat(embs_list, dim=0)
 
+
 # -----------------------------------------------------------------------------
 # Embed / Similarity (Modified)
 # -----------------------------------------------------------------------------
 
+
 @torch.no_grad()
 def similarity_between_two_images(
-    model: SimSiam,
-    img1: Union[str, Path],
-    img2: Union[str, Path],
-    device: str,
-    img_size: int = 224
+    model: SimSiam, img1: str | Path, img2: str | Path, device: str, img_size: int = 224
 ) -> float:
     """計算兩張圖片的餘弦相似度。
-    
+
     自動偵測模型輸入通道 (Grayscale/RGB) 並套用對應的前處理。
     """
     model.eval()
-    
+
     # 1. 自動偵測模型通道配置
     # 檢查第一層卷積的輸入通道數
     in_channels = model.backbone.conv1.in_channels
-    is_grayscale = (in_channels == 1)
-    
+    is_grayscale = in_channels == 1
+
     # 2. 設定對應的 Normalization 參數與轉換模式
     if is_grayscale:
         mean, std = [0.5], [0.5]
-        convert_mode = 'L'
+        convert_mode = "L"
     else:
         # ImageNet 預設統計值
         mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-        convert_mode = 'RGB'
-        
+        convert_mode = "RGB"
+
     # 3. 建立推論用的 Transform
     tfm = make_inference_transform(img_size=img_size, mean=mean, std=std)
-    
+
     def _load_and_process(path):
         img = Image.open(path).convert(convert_mode)
         # 增加 batch 維度 [C, H, W] -> [1, C, H, W]
@@ -587,15 +620,15 @@ def similarity_between_two_images(
     except Exception as e:
         print(f"Error loading images for similarity: {e}")
         return 0.0
-    
+
     # 4. 提取特徵 (Backbone -> Projector -> Normalize)
     # 與 embed_images 保持一致，使用 Projector 輸出進行檢索
     f1 = model.backbone(x1)
     f2 = model.backbone(x2)
-    
+
     z1 = F.normalize(model.projector(f1), dim=1)
     z2 = F.normalize(model.projector(f2), dim=1)
-    
+
     # 5. 計算 Cosine Similarity
     sim = F.cosine_similarity(z1, z2, dim=1).item()
     return float(sim)
@@ -605,25 +638,27 @@ def similarity_between_two_images(
 # Main Block (Modified)
 # -----------------------------------------------------------------------------
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 修正重點：
     # 1. 使用 GeometryAwareTransform 替代不存在的 TransformTwice
     # 2. 針對工程圖情境，設定單通道 (Grayscale) 參數
     # 3. 修正 DataLoader 的 num_workers 設定 (Windows 下建議設為 0 避免錯誤)
 
-    import os
-    
     # 設定參數
-    img_size = 1024
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
+    img_size = 512
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     # 模擬資料路徑 (請替換為實際路徑)
-    data_dir = Path('data/images')
+    data_dir = Path("data/images")
     if not data_dir.exists():
         print(f"警告：資料夾 {data_dir} 不存在，請修改路徑。")
         paths = []
     else:
-        paths = [p for p in data_dir.rglob('*') if p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.tif','.webp'}]
+        paths = [
+            p
+            for p in data_dir.rglob("*")
+            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".webp"}
+        ]
 
     if not paths:
         print("未找到圖片，程式結束。")
@@ -632,39 +667,41 @@ if __name__ == '__main__':
 
         # 針對工程圖/灰階圖的設定 (mean/std 設為 0.5)
         mean, std = [0.5], [0.5]
-        
+
         # 初始化幾何感知增強 (回傳兩視角)
         transform = GeometryAwareTransform(img_size=img_size, mean=mean, std=std)
-        
+
         # 建立資料集 (強制轉為灰階以符合工程圖需求)
         ds = UnlabeledImages(paths, transform=transform, grayscale=True)
-        
+
         dl = DataLoader(
-            ds, 
-            batch_size=32,    # 根據顯存調整
-            shuffle=True, 
-            drop_last=True, 
-            num_workers=4,    # 若在 Windows 報錯請改為 0
-            pin_memory=True
+            ds,
+            batch_size=32,  # 根據顯存調整
+            shuffle=True,
+            drop_last=True,
+            num_workers=4,  # 若在 Windows 報錯請改為 0
+            pin_memory=True,
         )
 
         # 初始化模型 (in_channels=1 對應灰階輸入)
-        model = SimSiam(backbone='resnet18', pretrained=False, in_channels=1).to(device)
-        
+        model = SimSiam(backbone="resnet18", pretrained=False, in_channels=1).to(device)
+
         # 優化器設定
         opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
-        
+
         # 混合精度訓練
-        scaler = torch.amp.GradScaler('cuda', enabled=(device.startswith('cuda')))
+        scaler = torch.amp.GradScaler("cuda", enabled=(device.startswith("cuda")))
 
         print(f"開始訓練 (Device: {device})...")
-        for epoch in range(1, 6): # 演示用跑 5 個 epoch
+        for epoch in range(1, 6):  # 演示用跑 5 個 epoch
             loss = train_one_epoch(model, dl, opt, scaler, device)
             print(f"Epoch {epoch:02d} | Loss = {loss:.4f}")
-            
+
         print("訓練完成。")
-        
+
         # 簡單測試相似度功能 (取列表中前兩張圖)
         if len(paths) >= 2:
             sim_score = similarity_between_two_images(model, paths[0], paths[1], device)
-            print(f"Similarity between {paths[0].name} and {paths[1].name}: {sim_score:.4f}")
+            print(
+                f"Similarity between {paths[0].name} and {paths[1].name}: {sim_score:.4f}"
+            )

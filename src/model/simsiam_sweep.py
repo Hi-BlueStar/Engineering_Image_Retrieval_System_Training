@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Run hyper-parameter sweeps for SimSiam training.
 
@@ -15,10 +14,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from itertools import product
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+
 
 try:
     import yaml
@@ -30,28 +30,85 @@ from src.model.train_simsiam import TrainingConfig, TrainingResult, run_training
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Grid search for SimSiam training.")
-    parser.add_argument("--train_dir", required=True, type=Path, help="Directory of training images.")
-    parser.add_argument("--val_dir", required=True, type=Path, help="Directory of validation images.")
-    parser.add_argument("--output_dir", type=Path, default=Path("results") / "sweeps", help="Base directory to store sweep runs.")
-    parser.add_argument("--grid_file", type=Path, help="YAML/JSON file describing hyper-parameter lists.")
-    parser.add_argument("--grid", type=str, help="Inline JSON string describing the grid (e.g. '{\"lr\":[3e-4,1e-3]}').")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs (unless overridden in grid).")
-    parser.add_argument("--batch_size", type=int, default=128, help="Training batch size.")
-    parser.add_argument("--val_batch_size", type=int, default=256, help="Validation batch size.")
-    parser.add_argument("--img_size", type=int, default=224, help="Input resolution for the backbone.")
-    parser.add_argument("--backbone", type=str, default="resnet50", choices=["resnet18", "resnet50"], help="Encoder backbone.")
+    parser.add_argument(
+        "--train_dir", required=True, type=Path, help="Directory of training images."
+    )
+    parser.add_argument(
+        "--val_dir", required=True, type=Path, help="Directory of validation images."
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=Path,
+        default=Path("results") / "sweeps",
+        help="Base directory to store sweep runs.",
+    )
+    parser.add_argument(
+        "--grid_file",
+        type=Path,
+        help="YAML/JSON file describing hyper-parameter lists.",
+    )
+    parser.add_argument(
+        "--grid",
+        type=str,
+        help="Inline JSON string describing the grid (e.g. '{\"lr\":[3e-4,1e-3]}').",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Number of epochs (unless overridden in grid).",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=128, help="Training batch size."
+    )
+    parser.add_argument(
+        "--val_batch_size", type=int, default=256, help="Validation batch size."
+    )
+    parser.add_argument(
+        "--img_size", type=int, default=224, help="Input resolution for the backbone."
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="Encoder backbone.",
+    )
     parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate.")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay.")
-    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader worker processes.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed (can be swept).")
-    parser.add_argument("--device", type=str, default=None, help="Force device placement (cpu or cuda).")
-    parser.add_argument("--log_interval", type=int, default=1, help="Epoch interval for console logging.")
-    parser.add_argument("--run_prefix", type=str, default="run", help="Folder prefix for each sweep run.")
-    parser.add_argument("--max_runs", type=int, default=None, help="Optional cap on number of combinations to execute.")
+    parser.add_argument(
+        "--weight_decay", type=float, default=1e-4, help="AdamW weight decay."
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="DataLoader worker processes."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed (can be swept)."
+    )
+    parser.add_argument(
+        "--device", type=str, default=None, help="Force device placement (cpu or cuda)."
+    )
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=1,
+        help="Epoch interval for console logging.",
+    )
+    parser.add_argument(
+        "--run_prefix",
+        type=str,
+        default="run",
+        help="Folder prefix for each sweep run.",
+    )
+    parser.add_argument(
+        "--max_runs",
+        type=int,
+        default=None,
+        help="Optional cap on number of combinations to execute.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def load_grid(args: argparse.Namespace) -> Dict[str, List]:
+def load_grid(args: argparse.Namespace) -> dict[str, list]:
     if args.grid and args.grid_file:
         raise ValueError("Provide either --grid or --grid_file, not both.")
     if args.grid:
@@ -65,15 +122,21 @@ def load_grid(args: argparse.Namespace) -> Dict[str, List]:
         else:
             data = json.loads(text)
     else:
-        raise ValueError("A hyper-parameter grid must be supplied via --grid or --grid_file.")
+        raise ValueError(
+            "A hyper-parameter grid must be supplied via --grid or --grid_file."
+        )
 
     if not isinstance(data, dict):
-        raise ValueError("Grid specification must be a mapping from parameter names to value lists.")
+        raise ValueError(
+            "Grid specification must be a mapping from parameter names to value lists."
+        )
 
-    grid: Dict[str, List] = {}
+    grid: dict[str, list] = {}
     for key, value in data.items():
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            raise ValueError(f"Grid values must be sequences. Key '{key}' has invalid value: {value!r}")
+            raise ValueError(
+                f"Grid values must be sequences. Key '{key}' has invalid value: {value!r}"
+            )
         if len(value) == 0:
             raise ValueError(f"Grid list for '{key}' is empty.")
         grid[key] = list(value)
@@ -113,10 +176,14 @@ def cast_config_value(name: str, value):
 
 def ensure_valid_param(name: str) -> None:
     if name not in TrainingConfig.__dataclass_fields__:  # type: ignore[attr-defined]
-        raise ValueError(f"Unknown hyper-parameter '{name}'. Valid keys: {list(TrainingConfig.__dataclass_fields__.keys())}")
+        raise ValueError(
+            f"Unknown hyper-parameter '{name}'. Valid keys: {list(TrainingConfig.__dataclass_fields__.keys())}"
+        )
 
 
-def build_run_config(base: TrainingConfig, params: Dict[str, object], run_dir: Path) -> TrainingConfig:
+def build_run_config(
+    base: TrainingConfig, params: dict[str, object], run_dir: Path
+) -> TrainingConfig:
     base_dict = asdict(base)
     base_dict.update(params)
     base_dict["output_dir"] = run_dir
@@ -127,7 +194,7 @@ def build_run_config(base: TrainingConfig, params: Dict[str, object], run_dir: P
     return TrainingConfig(**{k: cast_config_value(k, v) for k, v in base_dict.items()})
 
 
-def make_serializable(data: Dict) -> Dict:
+def make_serializable(data: dict) -> dict:
     serializable = {}
     for key, value in data.items():
         if isinstance(value, Path):
@@ -137,7 +204,7 @@ def make_serializable(data: Dict) -> Dict:
     return serializable
 
 
-def write_summary_csv(rows: List[Dict[str, object]], output_path: Path) -> None:
+def write_summary_csv(rows: list[dict[str, object]], output_path: Path) -> None:
     if not rows:
         return
     keys = set()
@@ -167,9 +234,11 @@ def main(argv: Iterable[str] | None = None) -> None:
     if args.max_runs is not None:
         combinations = combinations[: args.max_runs]
 
-    print(f"Executing {len(combinations)} SimSiam runs (grid size {len(combinations)}).")
+    print(
+        f"Executing {len(combinations)} SimSiam runs (grid size {len(combinations)})."
+    )
 
-    summary_rows: List[Dict[str, object]] = []
+    summary_rows: list[dict[str, object]] = []
     for idx, values in enumerate(combinations, start=1):
         params = dict(zip(keys, values))
         run_name = f"{args.run_prefix}_{idx:03d}"

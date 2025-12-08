@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
 import inspect
+import logging
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import fitz  # PyMuPDF
 import numpy as np
 import pandas as pd
 import plotly.express as px
-from PIL import Image, UnidentifiedImageError
 import torch
+import umap
+from PIL import Image, UnidentifiedImageError
 from sentence_transformers import SentenceTransformer, models
 from sklearn.manifold import TSNE
-import umap
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class PDFToImageConverter:
     image_cache_dir: Path
     dpi: int = 300
 
-    def convert_pdf(self, pdf_path: Path, label: str) -> List[Path]:
+    def convert_pdf(self, pdf_path: Path, label: str) -> list[Path]:
         """Convert a PDF into PNG images, using cache when available.
 
         Args:
@@ -60,7 +61,7 @@ class PDFToImageConverter:
 
         zoom = self.dpi / 72.0
         matrix = fitz.Matrix(zoom, zoom)
-        image_paths: List[Path] = []
+        image_paths: list[Path] = []
 
         for page_index in range(document.page_count):
             page = document.load_page(page_index)
@@ -74,7 +75,9 @@ class PDFToImageConverter:
                 pixmap.save(output_path)
                 image_paths.append(output_path)
             except RuntimeError as exc:  # corrupted page or rendering issue
-                logger.warning("Failed to render page %s (page %d): %s", pdf_path, page_index, exc)
+                logger.warning(
+                    "Failed to render page %s (page %d): %s", pdf_path, page_index, exc
+                )
                 continue
 
         document.close()
@@ -119,9 +122,11 @@ class OpenCLIPExtractor:
                 self.fallback_model_name,
             )
             self.model_name_used = self.fallback_model_name
-            self.model = SentenceTransformer(self.fallback_model_name, device=self.device)
+            self.model = SentenceTransformer(
+                self.fallback_model_name, device=self.device
+            )
 
-    def _load_images(self, image_paths: Sequence[Path]) -> List[Image.Image]:
+    def _load_images(self, image_paths: Sequence[Path]) -> list[Image.Image]:
         """Load images into memory with basic error handling.
 
         Args:
@@ -130,7 +135,7 @@ class OpenCLIPExtractor:
         Returns:
             A list of RGB PIL images. Corrupted or missing files are skipped.
         """
-        loaded: List[Image.Image] = []
+        loaded: list[Image.Image] = []
         for image_path in image_paths:
             try:
                 image = Image.open(image_path).convert("RGB")
@@ -148,7 +153,7 @@ class OpenCLIPExtractor:
         Returns:
             A numpy array of shape (N, D) containing L2-normalized embeddings.
         """
-        embeddings: List[np.ndarray] = []
+        embeddings: list[np.ndarray] = []
         loaded_any = False
 
         for start in range(0, len(image_paths), self.batch_size):
@@ -178,7 +183,9 @@ class OpenCLIPExtractor:
 
         return np.concatenate(embeddings, axis=0)
 
-    def _encode_batch(self, batch_images: List[Image.Image], batch_size: int) -> np.ndarray:
+    def _encode_batch(
+        self, batch_images: list[Image.Image], batch_size: int
+    ) -> np.ndarray:
         """Encode a batch of images, handling different encode signatures."""
         encode_sig = inspect.signature(self.model.encode)
         if "images" in encode_sig.parameters:
@@ -198,9 +205,12 @@ class OpenCLIPExtractor:
             show_progress_bar=False,
         )
 
-    def _handle_cuda_oom(self, current_bs: int) -> Optional[int]:
+    def _handle_cuda_oom(self, current_bs: int) -> int | None:
         """Handle CUDA OOM by shrinking batch size or falling back to CPU."""
-        logger.warning("CUDA OOM encountered; current batch size: %d. Attempting recovery.", current_bs)
+        logger.warning(
+            "CUDA OOM encountered; current batch size: %d. Attempting recovery.",
+            current_bs,
+        )
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -226,7 +236,7 @@ class ManifoldReducer:
     n_neighbors: int = 15
     min_dist: float = 0.1
     metric: str = "cosine"
-    random_state: Optional[int] = None
+    random_state: int | None = None
     tsne_perplexity: float = 30.0
     tsne_max_iter: int = 1000
 
@@ -288,7 +298,7 @@ class VisualizationBuilder:
         self.output_dir = output_dir
         _ensure_directory(self.output_dir)
 
-    def _build_hover_text(self, df: pd.DataFrame) -> List[str]:
+    def _build_hover_text(self, df: pd.DataFrame) -> list[str]:
         """Compose hover text strings for Plotly.
 
         Args:
@@ -377,7 +387,7 @@ class CADAnalysisPipeline:
         min_dist: float = 0.1,
         tsne_perplexity: float = 30.0,
         tsne_max_iter: int = 1000,
-        random_state: Optional[int] = 42,
+        random_state: int | None = 42,
         dpi: int = 300,
         allow_cpu_fallback: bool = True,
     ) -> None:
@@ -427,7 +437,7 @@ class CADAnalysisPipeline:
         _ensure_directory(self.embedding_cache_dir)
         _ensure_directory(self.output_dir)
 
-    def _scan_pdfs(self) -> List[Path]:
+    def _scan_pdfs(self) -> list[Path]:
         """Find all PDF files under the dataset root.
 
         Returns:
@@ -447,7 +457,7 @@ class CADAnalysisPipeline:
         relative = pdf_path.relative_to(self.dataset_root)
         return relative.parts[0] if relative.parts else "unknown"
 
-    def _collect_images(self, pdf_paths: Iterable[Path]) -> List[Dict[str, Path]]:
+    def _collect_images(self, pdf_paths: Iterable[Path]) -> list[dict[str, Path]]:
         """Convert PDFs to images and collect metadata.
 
         Args:
@@ -456,12 +466,14 @@ class CADAnalysisPipeline:
         Returns:
             A list of metadata dictionaries for each rendered page.
         """
-        records: List[Dict[str, Path]] = []
+        records: list[dict[str, Path]] = []
         for pdf_path in pdf_paths:
             label = self._label_from_path(pdf_path)
             images = self.converter.convert_pdf(pdf_path, label)
             for page_index, image_path in enumerate(images, start=1):
-                embed_path = self.embedding_cache_dir / image_path.relative_to(self.image_cache_dir)
+                embed_path = self.embedding_cache_dir / image_path.relative_to(
+                    self.image_cache_dir
+                )
                 embed_path = embed_path.with_suffix(".npy")
                 records.append(
                     {
@@ -476,7 +488,7 @@ class CADAnalysisPipeline:
                 )
         return records
 
-    def _load_cached_embedding(self, embedding_path: Path) -> Optional[np.ndarray]:
+    def _load_cached_embedding(self, embedding_path: Path) -> np.ndarray | None:
         """Load cached embedding if available.
 
         Args:
@@ -490,7 +502,9 @@ class CADAnalysisPipeline:
         try:
             return np.load(embedding_path)
         except (OSError, ValueError) as exc:
-            logger.warning("Failed to load cached embedding %s: %s", embedding_path, exc)
+            logger.warning(
+                "Failed to load cached embedding %s: %s", embedding_path, exc
+            )
             return None
 
     def _save_embedding(self, embedding_path: Path, embedding: np.ndarray) -> None:
@@ -504,8 +518,8 @@ class CADAnalysisPipeline:
         np.save(embedding_path, embedding)
 
     def _prepare_embeddings(
-        self, records: List[Dict[str, Path]]
-    ) -> Tuple[pd.DataFrame, np.ndarray]:
+        self, records: list[dict[str, Path]]
+    ) -> tuple[pd.DataFrame, np.ndarray]:
         """Load or compute embeddings with caching.
 
         Args:
@@ -517,8 +531,8 @@ class CADAnalysisPipeline:
         Raises:
             RuntimeError: If no embeddings can be produced.
         """
-        embeddings: List[Optional[np.ndarray]] = [None] * len(records)
-        to_compute_indices: List[int] = []
+        embeddings: list[np.ndarray | None] = [None] * len(records)
+        to_compute_indices: list[int] = []
 
         for idx, record in enumerate(records):
             cached = self._load_cached_embedding(record["embedding_path"])
@@ -528,29 +542,35 @@ class CADAnalysisPipeline:
                 to_compute_indices.append(idx)
 
         if to_compute_indices:
-            paths_to_compute = [records[idx]["image_path"] for idx in to_compute_indices]
+            paths_to_compute = [
+                records[idx]["image_path"] for idx in to_compute_indices
+            ]
             new_embeddings = self.extractor.extract(paths_to_compute)
             for i, embedding in zip(to_compute_indices, new_embeddings):
                 embeddings[i] = embedding
                 self._save_embedding(records[i]["embedding_path"], embedding)
 
-        final_records: List[Dict[str, Path]] = []
-        final_embeddings: List[np.ndarray] = []
+        final_records: list[dict[str, Path]] = []
+        final_embeddings: list[np.ndarray] = []
         for record, embedding in zip(records, embeddings):
             if embedding is None:
-                logger.warning("Skipping record without embedding: %s", record["image_path"])
+                logger.warning(
+                    "Skipping record without embedding: %s", record["image_path"]
+                )
                 continue
             final_records.append(record)
             final_embeddings.append(embedding)
 
         if not final_embeddings:
-            raise RuntimeError("No embeddings were generated. Check input data and cache paths.")
+            raise RuntimeError(
+                "No embeddings were generated. Check input data and cache paths."
+            )
 
         df = pd.DataFrame(final_records)
         stacked_embeddings = np.stack(final_embeddings, axis=0)
         return df, stacked_embeddings
 
-    def run(self) -> Dict[str, object]:
+    def run(self) -> dict[str, object]:
         """Execute the full pipeline and return artifacts.
 
         Returns:
@@ -576,10 +596,14 @@ class CADAnalysisPipeline:
         umap_title = f"UMAP Projection - {self.model_name} | Samples: {len(df)}"
         tsne_title = f"t-SNE Projection - {self.model_name} | Samples: {len(df)}"
 
-        umap_path = self.visualizer.create_scatter(df, umap_coords, umap_title, "umap_projection.html")
-        tsne_path = self.visualizer.create_scatter(df, tsne_coords, tsne_title, "tsne_projection.html")
+        umap_path = self.visualizer.create_scatter(
+            df, umap_coords, umap_title, "umap_projection.html"
+        )
+        tsne_path = self.visualizer.create_scatter(
+            df, tsne_coords, tsne_title, "tsne_projection.html"
+        )
 
-        artifacts: Dict[str, object] = {
+        artifacts: dict[str, object] = {
             "dataframe": df,
             "embeddings": embeddings,
             "umap_coords": umap_coords,
@@ -591,7 +615,9 @@ class CADAnalysisPipeline:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    )
 
     pipeline = CADAnalysisPipeline(
         dataset_root=Path("./data/吉輔提供資料"),
@@ -609,4 +635,7 @@ if __name__ == "__main__":
     )
 
     artifacts = pipeline.run()
-    logger.info("Artifacts generated: %s", {k: str(v) if isinstance(v, Path) else type(v) for k, v in artifacts.items()})
+    logger.info(
+        "Artifacts generated: %s",
+        {k: str(v) if isinstance(v, Path) else type(v) for k, v in artifacts.items()},
+    )

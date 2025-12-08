@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Train a SimSiam encoder with self-supervised learning and export training metrics.
 
@@ -12,23 +11,24 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Iterable, List
 
 import matplotlib.pyplot as plt
 import torch
-from torch.utils.data import DataLoader
 import torchvision.transforms as T
+from torch.utils.data import DataLoader
 
 from src.model.simsiam import (
     SimSiam,
     TransformTwice,
     UnlabeledImages,
+    evaluate,
     make_norm,
     train_one_epoch,
-    evaluate,
 )
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -55,8 +55,8 @@ class TrainingConfig:
 @dataclass
 class TrainingResult:
     config: TrainingConfig
-    train_losses: List[float]
-    val_losses: List[float]
+    train_losses: list[float]
+    val_losses: list[float]
     best_epoch: int
     best_val_loss: float
     final_train_loss: float
@@ -68,20 +68,24 @@ class TrainingResult:
     metrics_path: Path
 
 
-def list_images(root: Path) -> List[Path]:
+def list_images(root: Path) -> list[Path]:
     if not root.exists():
         raise FileNotFoundError(f"Directory not found: {root}")
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_EXTS)
     if not files:
-        raise FileNotFoundError(f"No images with extensions {sorted(IMAGE_EXTS)} under {root}")
+        raise FileNotFoundError(
+            f"No images with extensions {sorted(IMAGE_EXTS)} under {root}"
+        )
     return files
 
 
 def make_val_transform(img_size: int):
-    base = T.Compose([
-        T.Resize(int(img_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(img_size),
-    ])
+    base = T.Compose(
+        [
+            T.Resize(int(img_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(img_size),
+        ]
+    )
 
     class _ValTransform:
         def __init__(self, base_transform):
@@ -96,21 +100,60 @@ def make_val_transform(img_size: int):
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train SimSiam on unlabeled images.")
-    parser.add_argument("--train_dir", required=True, type=Path, help="Directory of training images.")
-    parser.add_argument("--val_dir", required=True, type=Path, help="Directory of validation images.")
-    parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory to store outputs.")
+    parser.add_argument(
+        "--train_dir", required=True, type=Path, help="Directory of training images."
+    )
+    parser.add_argument(
+        "--val_dir", required=True, type=Path, help="Directory of validation images."
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=Path,
+        default=Path("results"),
+        help="Directory to store outputs.",
+    )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs.")
-    parser.add_argument("--batch_size", type=int, default=128, help="Training batch size.")
-    parser.add_argument("--val_batch_size", type=int, default=256, help="Validation batch size.")
-    parser.add_argument("--img_size", type=int, default=224, help="Input resolution for the backbone.")
-    parser.add_argument("--backbone", type=str, default="resnet50", choices=["resnet18", "resnet50"], help="Encoder backbone.")
+    parser.add_argument(
+        "--batch_size", type=int, default=128, help="Training batch size."
+    )
+    parser.add_argument(
+        "--val_batch_size", type=int, default=256, help="Validation batch size."
+    )
+    parser.add_argument(
+        "--img_size", type=int, default=224, help="Input resolution for the backbone."
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="Encoder backbone.",
+    )
     parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate.")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay.")
-    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader worker processes.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
-    parser.add_argument("--device", type=str, default=None, help="Force device placement (cpu or cuda).")
-    parser.add_argument("--metrics_path", type=Path, default=None, help="Optional path to store training metrics JSON.")
-    parser.add_argument("--log_interval", type=int, default=1, help="Epoch interval for console logging.")
+    parser.add_argument(
+        "--weight_decay", type=float, default=1e-4, help="AdamW weight decay."
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="DataLoader worker processes."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--device", type=str, default=None, help="Force device placement (cpu or cuda)."
+    )
+    parser.add_argument(
+        "--metrics_path",
+        type=Path,
+        default=None,
+        help="Optional path to store training metrics JSON.",
+    )
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=1,
+        help="Epoch interval for console logging.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -119,7 +162,9 @@ def setup_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def plot_losses(train_losses: List[float], val_losses: List[float], output_path: Path) -> None:
+def plot_losses(
+    train_losses: list[float], val_losses: list[float], output_path: Path
+) -> None:
     if not train_losses:
         return
     plt.figure(figsize=(8, 5))
@@ -167,8 +212,12 @@ def run_training(config: TrainingConfig) -> TrainingResult:
     train_paths = list_images(config.train_dir)
     val_paths = list_images(config.val_dir)
 
-    train_ds = UnlabeledImages(train_paths, transform=TransformTwice(config.img_size), norm=norm)
-    val_ds = UnlabeledImages(val_paths, transform=make_val_transform(config.img_size), norm=norm)
+    train_ds = UnlabeledImages(
+        train_paths, transform=TransformTwice(config.img_size), norm=norm
+    )
+    val_ds = UnlabeledImages(
+        val_paths, transform=make_val_transform(config.img_size), norm=norm
+    )
 
     train_loader = DataLoader(
         train_ds,
@@ -188,7 +237,9 @@ def run_training(config: TrainingConfig) -> TrainingResult:
     )
 
     model = SimSiam(backbone=config.backbone).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+    )
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
 
     train_losses, val_losses = [], []
@@ -210,7 +261,9 @@ def run_training(config: TrainingConfig) -> TrainingResult:
             best_epoch = epoch
 
         if epoch % max(1, config.log_interval) == 0:
-            print(f"[Epoch {epoch:03d}/{config.epochs}] train_loss={train_loss:.4f} val_loss={val_loss:.4f}")
+            print(
+                f"[Epoch {epoch:03d}/{config.epochs}] train_loss={train_loss:.4f} val_loss={val_loss:.4f}"
+            )
 
     duration = time.perf_counter() - start_time
 
@@ -270,7 +323,9 @@ def main(argv: Iterable[str] | None = None) -> None:
     )
 
     result = run_training(config)
-    print(f"Training complete in {result.duration_seconds:.1f}s on device={result.device}")
+    print(
+        f"Training complete in {result.duration_seconds:.1f}s on device={result.device}"
+    )
     print(f"Best val loss {result.best_val_loss:.4f} at epoch {result.best_epoch}")
     print(f"Model saved to {result.model_path}")
     print(f"Loss chart saved to {result.chart_path}")
@@ -281,4 +336,3 @@ if __name__ == "__main__":
     main()
 
 # python -m src.model.train_simsiam --train_dir results/batch/engineering_images_100dpi_flat/train --val_dir results\batch\engineering_images_100dpi_flat\val --output_dir runs --img_size 1024 --backbone resnet18 --device cuda --epochs 100
-

@@ -22,16 +22,16 @@ Example:
 
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 import threading
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
-import argparse
 
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 try:
     import fitz  # PyMuPDF
@@ -43,14 +43,14 @@ except Exception as exc:  # pragma: no cover - 匯入期錯誤於執行時提示
 from rich import print as rprint
 from rich.console import Console
 from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
-    BarColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
-    TaskID,
 )
 
 
@@ -92,7 +92,7 @@ def _validate_inputs(root_dir: Path, output_dir: Path, dpi: int) -> None:
         raise ValueError("dpi 必須為正整數。")
 
 
-def _iter_pdfs(root_dir: Path) -> Iterable[Tuple[Path, str]]:
+def _iter_pdfs(root_dir: Path) -> Iterable[tuple[Path, str]]:
     """遞迴掃描並回傳 PDF 與其類別標籤。
 
     以 PDF 檔案的父資料夾名稱作為類別標籤（class label）。
@@ -148,9 +148,9 @@ def _sanitize_component_for_filename(text: str) -> str:
 
 
 def _plan_tasks(
-    pdfs_with_labels: List[Tuple[Path, str]],
+    pdfs_with_labels: list[tuple[Path, str]],
     root_dir: Path,
-) -> Tuple[Dict[Path, List[PageTask]], int]:
+) -> tuple[dict[Path, list[PageTask]], int]:
     """規劃所有頁面轉檔任務（保持原始資料夾結構）。
 
     步驟：
@@ -171,17 +171,17 @@ def _plan_tasks(
         RuntimeError: 若讀取 PDF 頁數發生錯誤。
     """
 
-    tasks_by_pdf: Dict[Path, List[PageTask]] = {}
+    tasks_by_pdf: dict[Path, list[PageTask]] = {}
     total_pages = 0
 
     for pdf_path, class_label in pdfs_with_labels:
-        page_count = _get_pdf_page_count(pdf_path)
+        # page_count = _get_pdf_page_count(pdf_path)
         rel_dir = pdf_path.parent.relative_to(root_dir)
 
         # for page_index in range(page_count):
         #     pdf_stem = pdf_path.stem
         #     page_num = page_index + 1
-        #     fname = f"{_sanitize_component_for_filename(pdf_stem)}_page_{page_num}.png"
+        #     fname = f"{_sanitize_component_for_filename(pdf_stem)}_page_{page_num}.png"  # noqa: E501
         #     rel_path = rel_dir / fname
 
         #     task = PageTask(
@@ -206,7 +206,7 @@ def _plan_tasks(
         total_pages += 1
 
     # 為了在單一 PDF 內也有合理的處理順序，依 page_index 排序
-    for pdf_path, plist in tasks_by_pdf.items():
+    for _pdf_path, plist in tasks_by_pdf.items():
         plist.sort(key=lambda t: t.page_index)
 
     return tasks_by_pdf, total_pages
@@ -214,12 +214,12 @@ def _plan_tasks(
 
 def _convert_one_pdf(
     pdf_path: Path,
-    tasks: List[PageTask],
+    tasks: list[PageTask],
     output_dir: Path,
     dpi: int,
     progress: Progress,
     progress_task_id: TaskID,
-    rows_out: List[Tuple[str, str, str]],
+    rows_out: list[tuple[str, str, str]],
     rows_lock: threading.Lock,
     console: Console,
 ) -> None:
@@ -274,8 +274,8 @@ def _convert_one_pdf(
                     # 以原始路徑字串表達。
                     row = (
                         str(t.source_pdf),  # source_pdf
-                        t.class_label,      # class_label
-                        image_rel_posix,    # image_path (相對於 output_dir)
+                        t.class_label,  # class_label
+                        image_rel_posix,  # image_path (相對於 output_dir)
                     )
                     with rows_lock:
                         rows_out.append(row)
@@ -337,7 +337,7 @@ def run(
     Raises:
         FileNotFoundError: 當 `root_dir` 無法存取時。
         ValueError: 當 `dpi` 無效時。
-    """
+    """  # noqa: E501
 
     console = Console()
 
@@ -376,7 +376,7 @@ def run(
         f"工作執行緒: [yellow]{max_workers}[/yellow]"
     )
 
-    rows_out: List[Tuple[str, str, str]] = []
+    rows_out: list[tuple[str, str, str]] = []
     rows_lock = threading.Lock()
 
     # Rich 進度條設定
@@ -390,7 +390,6 @@ def run(
         TimeRemainingColumn(),
         expand=True,
     )
-    
 
     with progress:
         task_id = progress.add_task("初始化任務…", total=total_pages)
@@ -437,7 +436,7 @@ def run(
     return df
 
 
-def _build_arg_parser() -> "argparse.ArgumentParser":
+def _build_arg_parser() -> argparse.ArgumentParser:
     """建立命令列介面（CLI）參數解析器。
 
     Returns:
@@ -451,10 +450,19 @@ def _build_arg_parser() -> "argparse.ArgumentParser":
             "- 多頁 PDF 每頁視為獨立影像，輸出時保留原資料夾結構。\n"
         )
     )
-    parser.add_argument("--root_dir", type=str, required=True, help="資料根目錄（含類別資料夾與 PDF）")
-    parser.add_argument("--output_dir", type=str, required=True, help="輸出資料集根目錄")
+    parser.add_argument(
+        "--root_dir", type=str, required=True, help="資料根目錄（含類別資料夾與 PDF）"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, required=True, help="輸出資料集根目錄"
+    )
     parser.add_argument("--dpi", type=int, default=300, help="輸出影像 DPI（預設 300）")
-    parser.add_argument("--max_workers", type=int, default=None, help="最大執行緒數（預設為 CPU 合理值）")
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=None,
+        help="最大執行緒數（預設為 CPU 合理值）",
+    )
     return parser
 
 
@@ -478,13 +486,13 @@ if __name__ == "__main__":
     # 參數寫死版本（供 IDE 快速測試，請依需求修改後取消註解）：
     # --------------------------------------------------------------
     from rich import print as rprint
-    
+
     try:
         df_manifest = run(
-            root_dir=r"./data/吉輔提供資料Clean",      # 根目錄（含類別資料夾與 PDF）
+            root_dir=r"./data/吉輔提供資料Clean",  # 根目錄（含類別資料夾與 PDF）
             output_dir=r"./data/engineering_images_Clean_100dpi",  # 輸出根目錄
-            dpi=100,                          # 影像解析度（DPI）
-            max_workers=16,                    # 預設為 CPU 合理值
+            dpi=100,  # 影像解析度（DPI）
+            max_workers=16,  # 預設為 CPU 合理值
         )
         rprint(df_manifest.head())
     except Exception as e:
@@ -493,4 +501,4 @@ if __name__ == "__main__":
 """
 uv run python src/pdf_to_image2.py --root_dir ./data/吉輔提供資料 --output_dir ./data/engineering_images_100dpi --dpi 100 --max_workers 14
 
-"""
+"""  # noqa: E501

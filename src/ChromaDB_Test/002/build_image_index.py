@@ -1,12 +1,13 @@
-import os
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 import chromadb
 import torch
-from pathlib import Path
-from typing import List, Dict, Any, Tuple
-from datetime import datetime
-from tqdm import tqdm
-from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
 from chromadb.utils.data_loaders import ImageLoader
+from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
+from tqdm import tqdm
+
 
 # ==========================================
 # 1. 系統參數設定 (Configuration)
@@ -24,6 +25,7 @@ PERSIST_PATH = "./chroma_db_store"
 # 2. 核心邏輯函式 (Core Logic)
 # ==========================================
 
+
 def get_compute_device() -> str:
     """偵測並回傳最佳的運算裝置 (CUDA > MPS > CPU)"""
     if torch.cuda.is_available():
@@ -36,6 +38,7 @@ def get_compute_device() -> str:
         print("⚠️ 未偵測到 GPU，將使用 CPU 運算 (速度較慢)。")
         return "cpu"
 
+
 def is_target_image(file_path: Path) -> bool:
     """
     [來自 Code B 的精華]
@@ -45,7 +48,7 @@ def is_target_image(file_path: Path) -> bool:
     3. large_{...}_pad2.png (子組件)
     """
     filename = file_path.name
-    
+
     # 基本檢查：必須是 png
     if not filename.lower().endswith(".png"):
         return False
@@ -53,12 +56,12 @@ def is_target_image(file_path: Path) -> bool:
     # 1. 檢查 Merged (例如: AK0OCVE8..._merged.png)
     if filename.endswith("_merged.png"):
         return True
-    
+
     # 2. 檢查 Large Components (針對 large_..._pad2.png)
     # 通常位於 large_components 子目錄下，或檔名包含特徵
     if filename.startswith("large_") and filename.endswith("_pad2.png"):
         return True
-    
+
     # 3. 檢查 Random Augmentation (範圍 01 ~ 20)
     if "_random_" in filename:
         try:
@@ -71,10 +74,13 @@ def is_target_image(file_path: Path) -> bool:
                     return True
         except (ValueError, IndexError):
             return False
-            
+
     return False
 
-def extract_metadata_and_id(file_path: Path, root_path: Path) -> Tuple[str, Dict[str, Any]]:
+
+def extract_metadata_and_id(
+    file_path: Path, root_path: Path
+) -> tuple[str, dict[str, Any]]:
     """
     [融合 Code A 與 Code B]
     解析路徑結構以產生 Metadata，並生成語意化 ID。
@@ -83,13 +89,13 @@ def extract_metadata_and_id(file_path: Path, root_path: Path) -> Tuple[str, Dict
         relative_path = file_path.relative_to(root_path)
         path_parts = relative_path.parts
     except ValueError:
-        #若路徑不在 root 下，回退到檔名
+        # 若路徑不在 root 下，回退到檔名
         path_parts = []
 
     # 預設值
     category = "unknown_category"
     part_id = "unknown_part"
-    
+
     # 解析目錄結構: root / Category / PartID / ...
     if len(path_parts) >= 2:
         category = path_parts[0]
@@ -99,7 +105,7 @@ def extract_metadata_and_id(file_path: Path, root_path: Path) -> Tuple[str, Dict
     fname = file_path.name
     img_type = "standard"
     variant = "original"
-    
+
     if "merged" in fname:
         img_type = "merged_view"
         variant = "merged"
@@ -115,43 +121,48 @@ def extract_metadata_and_id(file_path: Path, root_path: Path) -> Tuple[str, Dict
         "category": category,
         "part_id": part_id,
         "filename": fname,
-        "filepath": str(file_path), # 絕對路徑
+        "filepath": str(file_path),  # 絕對路徑
         "type": img_type,
         "variant": variant,
-        "added_date": datetime.now().isoformat(), # Code B 特性
-        "source_layer": "sub_dir" if "large_components" in str(file_path) else "main_dir"
+        "added_date": datetime.now().isoformat(),  # Code B 特性
+        "source_layer": "sub_dir"
+        if "large_components" in str(file_path)
+        else "main_dir",
     }
 
     # 建構語意化 ID (Semantic ID) - [Code B 特性]
     # 格式: Category_PartID_Filename
     # 替換特殊字元以確保 ID 安全
     safe_id = f"{category}_{part_id}_{fname}".replace(" ", "_")
-    
+
     return safe_id, metadata
+
 
 def filename_is_large_component(filename: str) -> bool:
     """輔助函式：判斷是否為大型組件切圖"""
     return filename.startswith("large_") and filename.endswith("_pad2.png")
 
+
 # ==========================================
 # 3. 主程式 (Main Execution)
 # ==========================================
 
+
 def main():
-    print(f"--- 啟動工程圖檔索引建置系統 (v3 Integrated) ---")
+    print("--- 啟動工程圖檔索引建置系統 (v3 Integrated) ---")
     print(f"目標目錄: {ROOT_DIR}")
-    
+
     # 1. 硬體初始化
     device = get_compute_device()
-    
+
     # 2. ChromaDB 初始化
     client = chromadb.PersistentClient(path=PERSIST_PATH)
     embedding_func = OpenCLIPEmbeddingFunction(device=device)
-    
+
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_func,
-        data_loader=ImageLoader()
+        data_loader=ImageLoader(),
     )
     print(f"資料庫連線成功。Collection: {COLLECTION_NAME}")
 
@@ -170,7 +181,7 @@ def main():
     ids_batch = []
     uris_batch = []
     metadatas_batch = []
-    
+
     valid_count = 0
     skipped_count = 0
 
@@ -179,11 +190,11 @@ def main():
         if not is_target_image(image_path):
             skipped_count += 1
             continue
-            
+
         try:
             # 解析 ID 與 Metadata
             img_id, meta = extract_metadata_and_id(image_path, root_path)
-            
+
             ids_batch.append(img_id)
             uris_batch.append(str(image_path))
             metadatas_batch.append(meta)
@@ -192,9 +203,7 @@ def main():
             # 批次滿了就寫入
             if len(ids_batch) >= BATCH_SIZE:
                 collection.add(
-                    ids=ids_batch,
-                    uris=uris_batch,
-                    metadatas=metadatas_batch
+                    ids=ids_batch, uris=uris_batch, metadatas=metadatas_batch
                 )
                 ids_batch = []
                 uris_batch = []
@@ -205,23 +214,20 @@ def main():
 
     # 處理剩餘的尾數
     if ids_batch:
-        collection.add(
-            ids=ids_batch,
-            uris=uris_batch,
-            metadatas=metadatas_batch
-        )
+        collection.add(ids=ids_batch, uris=uris_batch, metadatas=metadatas_batch)
 
     # 5. 總結報告
-    print(f"\n--- 索引建置完成 ---")
+    print("\n--- 索引建置完成 ---")
     print(f"📂 掃描總數: {len(all_images)}")
     print(f"✅ 成功入庫: {valid_count} (符合篩選條件)")
     print(f"⏩ 忽略檔案: {skipped_count} (非 Merged/Valid Random/Large)")
     print(f"💾 資料庫位置: {PERSIST_PATH}")
     print(f"📇 Collection: {COLLECTION_NAME}")
-    
+
     # 簡單驗證
     count = collection.count()
     print(f"📊 目前資料庫內總筆數: {count}")
+
 
 if __name__ == "__main__":
     main()

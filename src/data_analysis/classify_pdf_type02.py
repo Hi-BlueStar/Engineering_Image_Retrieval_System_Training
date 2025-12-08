@@ -1,33 +1,37 @@
-import os
 import time
-import fitz  # PyMuPDF
 from pathlib import Path
+
+import fitz  # PyMuPDF
+from rich import box
 from rich.console import Console
+from rich.markup import escape
+from rich.panel import Panel
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
     TaskProgressColumn,
-    TimeRemainingColumn
+    TextColumn,
+    TimeRemainingColumn,
 )
 from rich.table import Table
-from rich.panel import Panel
-from rich.markup import escape
-from rich import box
 from rich.theme import Theme
 
+
 # 設定自定義的主題風格
-custom_theme = Theme({
-    "info": "cyan",
-    "warning": "yellow",
-    "error": "bold red",
-    "success": "bold green",
-    "vector": "blue",
-    "raster": "magenta"
-})
+custom_theme = Theme(
+    {
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "bold red",
+        "success": "bold green",
+        "vector": "blue",
+        "raster": "magenta",
+    }
+)
 
 console = Console(theme=custom_theme)
+
 
 def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
     """
@@ -37,24 +41,28 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
         # 使用 context manager 確保檔案會被關閉
         with fitz.open(file_path) as doc:
             total_pages = len(doc)
-            
+
             if total_pages == 0:
                 return {
                     "status": "success",
                     "type": "Empty",
                     "ratio": 0.0,
-                    "reason": "PDF 無頁面"
+                    "reason": "PDF 無頁面",
                 }
 
-            pages_to_check = min(total_pages, page_sample_limit) if page_sample_limit else total_pages
+            pages_to_check = (
+                min(total_pages, page_sample_limit)
+                if page_sample_limit
+                else total_pages
+            )
             vector_pages_count = 0
             raster_pages_count = 0
-            
+
             for i in range(pages_to_check):
                 page = doc.load_page(i)
                 text = page.get_text().strip()
                 images = page.get_images()
-                
+
                 # 判定邏輯優化：降低門檻以減少 Unknown
                 # 只要頁面有少量文字 (>3 chars)，通常代表有文字層 (可能是標題、頁碼或少量內文)
                 if len(text) > 3:
@@ -63,10 +71,10 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
                 elif len(images) > 0:
                     raster_pages_count += 1
                 # 若既無字也無圖，暫不計入主要分類，視為空白頁
-            
+
             # 計算文字頁比例
             text_ratio = vector_pages_count / pages_to_check
-            
+
             # 根據分數決定類型 (優先判定 Vector)
             if vector_pages_count > 0:
                 # 只要採樣中有任何一頁包含可搜尋文字，就歸類為 Vector
@@ -85,32 +93,38 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
                 "status": "success",
                 "type": file_type,
                 "ratio": round(text_ratio, 2),
-                "reason": reason
+                "reason": reason,
             }
 
     except Exception as e:
         # 捕捉所有異常並回傳錯誤訊息
-        return {
-            "status": "error",
-            "msg": str(e)
-        }
+        return {"status": "error", "msg": str(e)}
+
 
 def scan_directory(directory: str):
     """
     歷遍資料夾並執行分析，包含 Rich UI 互動。
     """
     target_dir = Path(directory)
-    
+
     if not target_dir.exists() or not target_dir.is_dir():
         console.print(f"[error]錯誤：路徑 '{directory}' 不存在或不是資料夾！[/error]")
         return
 
     all_pdfs = []
-    
+
     # 1. 初始化階段：掃描檔案列表 (使用 Spinner)
-    console.print(Panel(f"正在掃描資料夾：[bold cyan]{escape(str(target_dir))}[/bold cyan]", title="初始化", border_style="blue"))
-    
-    with console.status("[bold green]正在搜尋 PDF 檔案...[/bold green]", spinner="dots"):
+    console.print(
+        Panel(
+            f"正在掃描資料夾：[bold cyan]{escape(str(target_dir))}[/bold cyan]",
+            title="初始化",
+            border_style="blue",
+        )
+    )
+
+    with console.status(
+        "[bold green]正在搜尋 PDF 檔案...[/bold green]", spinner="dots"
+    ):
         # rglob 會遞迴搜尋所有子資料夾
         all_pdfs = list(target_dir.rglob("*.pdf"))
         # 模擬一點延遲讓使用者看得到動畫 (若檔案很少)
@@ -143,17 +157,19 @@ def scan_directory(directory: str):
 
         for pdf_path in all_pdfs:
             # 顯示當前正在處理的檔名 (截斷過長的檔名)
-            display_name = pdf_path.name if len(pdf_path.name) < 30 else pdf_path.name[:27] + "..."
+            display_name = (
+                pdf_path.name if len(pdf_path.name) < 30 else pdf_path.name[:27] + "..."
+            )
             progress.update(task, description=f"[cyan]分析中: {escape(display_name)}")
-            
+
             # 執行分析
             analysis = classify_pdf_type(pdf_path)
-            
+
             # 儲存結果
             result_entry = {
                 "file": pdf_path.name,
-                "path": str(pdf_path.relative_to(target_dir)), # 顯示相對路徑
-                "analysis": analysis
+                "path": str(pdf_path.relative_to(target_dir)),  # 顯示相對路徑
+                "analysis": analysis,
             }
             results.append(result_entry)
 
@@ -167,7 +183,7 @@ def scan_directory(directory: str):
                     unknown_count += 1
             else:
                 error_count += 1
-            
+
             # 更新進度
             progress.advance(task)
 
@@ -182,7 +198,7 @@ def scan_directory(directory: str):
     for res in results:
         path_str = escape(res["path"])
         analysis = res["analysis"]
-        
+
         if analysis["status"] == "success":
             type_str = analysis["type"]
             ratio_str = f"{analysis['ratio'] * 100:.0f}%"
@@ -195,16 +211,16 @@ def scan_directory(directory: str):
                 type_style = "[bold magenta]點陣 (Raster)[/bold magenta]"
             else:
                 type_style = "[dim]未知 (Unknown)[/dim]"
-                
+
             table.add_row(path_str, type_style, ratio_str, reason_str)
         else:
             # 錯誤處理顯示
             err_msg = escape(analysis["msg"])
             table.add_row(
-                path_str, 
-                "[bold red]ERROR[/bold red]", 
-                "-", 
-                f"[bold red]{err_msg}[/bold red]"
+                path_str,
+                "[bold red]ERROR[/bold red]",
+                "-",
+                f"[bold red]{err_msg}[/bold red]",
             )
 
     console.print("\n")
@@ -221,16 +237,19 @@ def scan_directory(directory: str):
         f"分析失敗 (Error) : [bold red]{error_count}[/bold red]"
     )
 
-    console.print(Panel(
-        summary_text, 
-        title="[bold green]執行完畢[/bold green]", 
-        subtitle="PDF Analysis Tool",
-        border_style="green",
-        box=box.HEAVY_EDGE, # 重線風格
-        padding=(1, 2)
-    ))
+    console.print(
+        Panel(
+            summary_text,
+            title="[bold green]執行完畢[/bold green]",
+            subtitle="PDF Analysis Tool",
+            border_style="green",
+            box=box.HEAVY_EDGE,  # 重線風格
+            padding=(1, 2),
+        )
+    )
+
 
 if __name__ == "__main__":
     # 在此輸入您想要掃描的資料夾路徑，"." 代表當前目錄
-    target_directory = "." 
+    target_directory = "."
     scan_directory(target_directory)

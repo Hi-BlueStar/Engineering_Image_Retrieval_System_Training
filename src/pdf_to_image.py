@@ -23,19 +23,18 @@ Example:
 
 from __future__ import annotations
 
+import argparse
 import os
-import re
-import sys
-import math
 import random
+import sys
 import threading
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
-import argparse
 
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 try:
     import fitz  # PyMuPDF
@@ -47,14 +46,14 @@ except Exception as exc:  # pragma: no cover - 匯入期錯誤於執行時提示
 from rich import print as rprint
 from rich.console import Console
 from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
-    BarColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
-    TaskID,
 )
 
 
@@ -79,7 +78,9 @@ class PageTask:
     dest_rel_path: Path
 
 
-def _validate_inputs(root_dir: Path, output_dir: Path, dpi: int, val_split: float) -> None:
+def _validate_inputs(
+    root_dir: Path, output_dir: Path, dpi: int, val_split: float
+) -> None:
     """驗證輸入參數與路徑。
 
     Args:
@@ -101,7 +102,7 @@ def _validate_inputs(root_dir: Path, output_dir: Path, dpi: int, val_split: floa
         raise ValueError("val_split 必須位於 [0.0, 1.0) 區間內。")
 
 
-def _iter_pdfs(root_dir: Path) -> Iterable[Tuple[Path, str]]:
+def _iter_pdfs(root_dir: Path) -> Iterable[tuple[Path, str]]:
     """遞迴掃描並回傳 PDF 與其類別標籤。
 
     以 PDF 檔案的父資料夾名稱作為類別標籤（class label）。
@@ -157,14 +158,14 @@ def _sanitize_component_for_filename(text: str) -> str:
 
 
 def _plan_tasks(
-    pdfs_with_labels: List[Tuple[Path, str]],
+    pdfs_with_labels: list[tuple[Path, str]],
     root_dir: Path,
     effective_output_dir: Path,
     dpi: int,
     val_split: float,
     flat_output: bool,
     random_state: int,
-) -> Tuple[Dict[Path, List[PageTask]], int]:
+) -> tuple[dict[Path, list[PageTask]], int]:
     """規劃所有頁面轉檔任務（含分層切分與目標路徑）。
 
     步驟：
@@ -192,21 +193,21 @@ def _plan_tasks(
     """
 
     # 展開為逐頁項目（先不決定 split 與輸出路徑）
-    expanded: List[Tuple[Path, str, int]] = []  # (pdf_path, class_label, page_index)
+    expanded: list[tuple[Path, str, int]] = []  # (pdf_path, class_label, page_index)
     for pdf_path, class_label in pdfs_with_labels:
         page_count = _get_pdf_page_count(pdf_path)
         for p in range(page_count):
             expanded.append((pdf_path, class_label, p))
 
     # 依類別分組以進行分層切分
-    by_class: Dict[str, List[Tuple[Path, str, int]]] = {}
+    by_class: dict[str, list[tuple[Path, str, int]]] = {}
     for item in expanded:
         by_class.setdefault(item[1], []).append(item)
 
     rng = random.Random(random_state)
 
     # 產出 PageTask（含 split 與目的路徑）
-    tasks_by_pdf: Dict[Path, List[PageTask]] = {}
+    tasks_by_pdf: dict[Path, list[PageTask]] = {}
     total_pages = 0
 
     for class_label, items in by_class.items():
@@ -231,7 +232,9 @@ def _plan_tasks(
                 rel_path = Path(split) / fname
             else:
                 # nested: 分類資料夾下以原 PDF 檔名組合
-                fname = f"{_sanitize_component_for_filename(pdf_stem)}_page_{page_num}.png"
+                fname = (
+                    f"{_sanitize_component_for_filename(pdf_stem)}_page_{page_num}.png"
+                )
                 rel_path = Path(split) / class_label / fname
 
             task = PageTask(
@@ -253,12 +256,12 @@ def _plan_tasks(
 
 def _convert_one_pdf(
     pdf_path: Path,
-    tasks: List[PageTask],
+    tasks: list[PageTask],
     effective_output_dir: Path,
     dpi: int,
     progress: Progress,
     progress_task_id: TaskID,
-    rows_out: List[Tuple[str, str, str, str]],
+    rows_out: list[tuple[str, str, str, str]],
     rows_lock: threading.Lock,
     console: Console,
 ) -> None:
@@ -313,9 +316,9 @@ def _convert_one_pdf(
                     # 以原始路徑字串表達。
                     row = (
                         str(t.source_pdf),  # source_pdf
-                        t.class_label,      # class_label
-                        image_rel_posix,    # image_path (相對於 output_dir)
-                        t.split,            # split
+                        t.class_label,  # class_label
+                        image_rel_posix,  # image_path (相對於 output_dir)
+                        t.split,  # split
                     )
                     with rows_lock:
                         rows_out.append(row)
@@ -404,7 +407,9 @@ def run(
         # 空集合仍回傳空 DataFrame，並在輸出目錄建立空 manifest。
         effective_output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = effective_output_dir / "manifest.csv"
-        df_empty = pd.DataFrame(columns=["source_pdf", "class_label", "image_path", "split"])
+        df_empty = pd.DataFrame(
+            columns=["source_pdf", "class_label", "image_path", "split"]
+        )
         df_empty.to_csv(manifest_path, index=False)
         return df_empty
 
@@ -433,7 +438,7 @@ def run(
         f"工作執行緒: [yellow]{max_workers}[/yellow]"
     )
 
-    rows_out: List[Tuple[str, str, str, str]] = []
+    rows_out: list[tuple[str, str, str, str]] = []
     rows_lock = threading.Lock()
 
     # Rich 進度條設定
@@ -447,7 +452,6 @@ def run(
         TimeRemainingColumn(),
         expand=True,
     )
-    
 
     with progress:
         task_id = progress.add_task("初始化任務…", total=total_pages)
@@ -481,7 +485,9 @@ def run(
                     )
 
     # 完成後產生 manifest
-    df = pd.DataFrame(rows_out, columns=["source_pdf", "class_label", "image_path", "split"])
+    df = pd.DataFrame(
+        rows_out, columns=["source_pdf", "class_label", "image_path", "split"]
+    )
     manifest_path = effective_output_dir / "manifest.csv"
     df.to_csv(manifest_path, index=False)
 
@@ -494,7 +500,7 @@ def run(
     return df
 
 
-def _build_arg_parser() -> "argparse.ArgumentParser":
+def _build_arg_parser() -> argparse.ArgumentParser:
     """建立命令列介面（CLI）參數解析器。
 
     Returns:
@@ -508,13 +514,30 @@ def _build_arg_parser() -> "argparse.ArgumentParser":
             "- 多頁 PDF 每頁視為獨立影像。\n"
         )
     )
-    parser.add_argument("--root_dir", type=str, required=True, help="資料根目錄（含類別資料夾與 PDF）")
-    parser.add_argument("--output_dir", type=str, required=True, help="輸出資料集根目錄")
+    parser.add_argument(
+        "--root_dir", type=str, required=True, help="資料根目錄（含類別資料夾與 PDF）"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, required=True, help="輸出資料集根目錄"
+    )
     parser.add_argument("--dpi", type=int, default=300, help="輸出影像 DPI（預設 300）")
-    parser.add_argument("--flat_output", action="store_true", help="使用 flat 模式輸出（實際資料夾名稱會加 _flat 後綴）")
-    parser.add_argument("--val_split", type=float, default=0.2, help="驗證集比例（預設 0.2）")
-    parser.add_argument("--random_state", type=int, default=42, help="隨機種子（預設 42）")
-    parser.add_argument("--max_workers", type=int, default=None, help="最大執行緒數（預設為 CPU 合理值）")
+    parser.add_argument(
+        "--flat_output",
+        action="store_true",
+        help="使用 flat 模式輸出（實際資料夾名稱會加 _flat 後綴）",
+    )
+    parser.add_argument(
+        "--val_split", type=float, default=0.2, help="驗證集比例（預設 0.2）"
+    )
+    parser.add_argument(
+        "--random_state", type=int, default=42, help="隨機種子（預設 42）"
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=None,
+        help="最大執行緒數（預設為 CPU 合理值）",
+    )
     return parser
 
 
@@ -541,7 +564,7 @@ if __name__ == "__main__":
     # 參數寫死版本（供 IDE 快速測試，請依需求修改後取消註解）：
     # --------------------------------------------------------------
     # from rich import print as rprint
-    
+
     # try:
     #     df_manifest = run(
     #         root_dir=r"./data/吉輔提供資料",              # 根目錄（含類別資料夾與 PDF）
@@ -555,7 +578,6 @@ if __name__ == "__main__":
     #     rprint(df_manifest.head())
     # except Exception as e:
     #     rprint(f"[red]✗[/red] 測試執行失敗：[yellow]{type(e).__name__}: {e}[/yellow]")
-
 
 
 """
@@ -588,5 +610,3 @@ uv run python src/pdf_to_image3.py --root_dir ./data/吉輔提供資料 --output
 uv run python src/pdf_to_image3.py --root_dir ./data/吉輔提供資料 --output_dir ./data/engineering_images_600dpi --dpi 600 --flat_output --val_split 0.2 --random_state 42
 
 """
-
-

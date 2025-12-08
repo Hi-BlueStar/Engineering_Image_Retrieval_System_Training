@@ -40,3 +40,62 @@ dependencies = [
     "tqdm>=4.67.1",
     "umap-learn>=0.5.9.post2",
 ]
+
+[dependency-groups]
+dev = [
+    "isort>=7.0.0",
+    "ruff>=0.14.8",
+]
+
+
+[tool.ruff]
+# 設定行長，通常對齊 Black 的標準 (88) 或放寬至 120
+line-length = 88
+
+# 設定目標 Python 版本 (根據您的專案調整)
+target-version = "py310"
+
+# 排除不需要檢查的目錄
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "migrations",
+]
+
+[tool.ruff.lint]
+# 核心規則集選擇 (這是 Ruff 的靈魂)
+select = [
+    "E",   # pycodestyle errors (標準錯誤)
+    "W",   # pycodestyle warnings (標準警告)
+    "F",   # Pyflakes (邏輯錯誤，如未使用的變數)
+    "I",   # isort (Import 排序，這就是您要的 isort 替代品)
+    "B",   # flake8-bugbear (發現潛在的 Bug)
+    "UP",  # pyupgrade (自動升級語法，例如將 TypeHint 從 List 改為 list)
+    "N",   # pep8-naming (變數命名規範)
+    "SIM", # flake8-simplify (建議更簡潔的寫法)
+]
+
+# 忽略特定規則 (視專案需求調整)
+ignore = [
+    "B008",  # 允許在函數參數定義中使用函數調用 (例如 FastAPI 的 Depends)
+]
+
+# 允許自動修復的規則
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+# isort 的具體設定
+known-first-party = ["Engineering_Image_Retrieval_System"] # 將您的專案視為第一方模組
+force-single-line = false               # 是否強制每個 import 一行 (通常設為 false)
+lines-after-imports = 2                 # import區塊後空兩行
+
+[tool.ruff.format]
+# 格式化設定，旨在完全相容 Black
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

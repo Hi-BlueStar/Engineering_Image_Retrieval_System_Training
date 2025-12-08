@@ -13,4 +13,6 @@ wheels/
 data/
 chroma_db_store/
 results/
-
+demo/image_to_be_searched/
+demo/search_results_viz/
+dataset/

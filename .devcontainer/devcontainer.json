@@ -1,0 +1,64 @@
+// 有關格式詳情，請參閱 https://aka.ms/devcontainer.json。有關設定選項，請參閱以下位置的 README 檔案：
+// README 檔案位於： https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Python 3 with CUDA",
+	// 或使用 Dockerfile 或 Docker Compose 檔案。更多資訊：  https://containers.dev/guide/dockerfile
+	"build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+
+	// 【關鍵設定】啟用 GPU 支援
+    // 這會將宿主機的 GPU 資源掛載到容器內
+    "runArgs": [
+        "--gpus", "all",
+        "--shm-size", "32g",    // 容器共享内存（Shared Memory）
+        "--memory", "32g",         // 設定記憶體硬限制為 4GB
+        "--memory-swap", "128g"     // 設定記憶體與 Swap 的總限制為 4GB (即禁用 Swap)
+    ],
+
+	// 要新增到開發容器的功能。更多資訊： https://containers.dev/features.
+	"features": {
+        "ghcr.io/devcontainers/features/git:1": {},
+        // 安裝輕量級桌面環境
+        "ghcr.io/devcontainers/features/desktop-lite:1": {
+            "version": "latest"
+        },
+        // 可選：若需要 Docker in Docker
+        // "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+    },
+
+	// 使用 'forwardPorts' 將容器內的連接埠清單在本地可用。
+	// 轉發 VNC (5901) 與 Web VNC (6080) 端口
+    "forwardPorts": [6080, 5901],
+
+	// 使用 'postCreateCommand' 在容器建立後執行命令。
+	// 環境建立後的自動化指令
+    // 安裝 PySide6 及必要的系統依賴
+    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y libgl1-mesa-glx libegl1-mesa libxkbcommon-x11-0 libdbus-1-3 && pip install PySide6",
+
+	// 配置工具特定的屬性。
+	// 針對 VS Code 的客製化設定
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "njpwerner.autodocstring" // 建議：自動生成 docstring
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python"
+            }
+        }
+    },
+
+	// 取消註解以使用 root 使用者連線。更多資訊： https://aka.ms/dev-containers-non-root.
+	// 設定容器內的使用者為 root (資料科學環境常需 root 權限安裝套件)
+    // 若需安全性可改回 vscode user，但需處理權限問題
+	"remoteUser": "root",
+
+    // 設定環境變數，讓 PySide 知道顯示器在哪
+    "containerEnv": {
+        "DISPLAY": ":1"
+    },
+}

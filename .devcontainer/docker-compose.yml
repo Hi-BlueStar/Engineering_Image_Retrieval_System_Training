@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    # 使用 PyTorch 官方映像檔作為基底，確保 CUDA 版本相容
+    image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
+    volumes:
+      # 將當前工作目錄掛載到容器內的 /workspace
+      - ..:/workspace:cached
+    
+    # 保持容器運行，避免執行完畢後立即退出
+    command: /bin/sh -c "while sleep 1000; do :; done"
+    
+    # GPU 資源預留與配置 (關鍵配置)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all # 使用所有可用 GPU
+              capabilities: [gpu]
+
+    # 設定共享記憶體大小，深度學習訓練常需較大 shm
+    shm_size: '8gb'

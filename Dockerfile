@@ -76,16 +76,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libdbus-1-3 \
     tmux \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# --- 2. 複製虛擬環境 ---
-# 這是縮小體積的關鍵：只從 builder 階段複製 /opt/venv
+# --- 2. 安裝 uv 到最終環境 ---
+# 我們直接從官方 image 複製，或者也可以從 builder 階段複製
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# --- 3. 複製編譯好的虛擬環境 ---
+    # 這是縮小體積的關鍵：只從 builder 階段複製 /opt/venv
 COPY --from=builder /opt/venv /opt/venv
 
-# --- 3. 專案建置與依賴同步 ---
+# --- 4. 專案建置與依賴同步 ---
 # 設定工作目錄
 WORKDIR /app
 
+# --- 5. (選用) 驗證環境 ---
+# 可以在這裡加入一行檢查，確保 CUDA 可被 Torch 抓到 (若 requirements 有 torch)
+RUN python -c "import torch; print(f'Torch: {torch.__version__}, CUDA: {torch.version.cuda}')" || true
+
 CMD ["sleep", "infinity"]
-
-

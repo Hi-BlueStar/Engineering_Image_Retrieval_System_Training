@@ -55,32 +55,39 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
                 if page_sample_limit
                 else total_pages
             )
-            text_content_score = 0
-            image_content_score = 0
+            vector_pages_count = 0
+            raster_pages_count = 0
 
             for i in range(pages_to_check):
                 page = doc.load_page(i)
                 text = page.get_text().strip()
                 images = page.get_images()
 
-                # 判定邏輯 (同前次對話)
-                if len(text) > 50:
-                    text_content_score += 1
-                elif len(text) < 10 and len(images) > 0:
-                    image_content_score += 1
+                # 判定邏輯優化：降低門檻以減少 Unknown
+                # 只要頁面有少量文字 (>3 chars)，通常代表有文字層 (可能是標題、頁碼或少量內文)
+                if len(text) > 3:
+                    vector_pages_count += 1
+                # 若文字極少但有圖片，視為點陣頁
+                elif len(images) > 0:
+                    raster_pages_count += 1
+                # 若既無字也無圖，暫不計入主要分類，視為空白頁
 
-            text_ratio = text_content_score / pages_to_check
+            # 計算文字頁比例
+            text_ratio = vector_pages_count / pages_to_check
 
-            # 根據分數決定類型
-            if text_ratio > 0.2:
+            # 根據分數決定類型 (優先判定 Vector)
+            if vector_pages_count > 0:
+                # 只要採樣中有任何一頁包含可搜尋文字，就歸類為 Vector
+                # 這樣可以捕捉到混合型文件或字數較少的向量檔
                 file_type = "Vector"
-                reason = "偵測到顯著文字層"
-            elif image_content_score > 0:
+                reason = f"採樣 {pages_to_check} 頁中有 {vector_pages_count} 頁含文字層"
+            elif raster_pages_count > 0:
                 file_type = "Raster"
-                reason = "文字極少，以圖片為主"
+                reason = "無可搜尋文字，但檢測到圖片"
             else:
+                # 真的完全沒字也沒圖 (極少見，可能是純線條繪圖或全白)
                 file_type = "Unknown"
-                reason = "無文字且無顯著圖片"
+                reason = "無文字且無顯著圖片 (可能為空白或純向量繪圖)"
 
             return {
                 "status": "success",
@@ -132,6 +139,7 @@ def scan_directory(directory: str):
     results = []
     vector_count = 0
     raster_count = 0
+    unknown_count = 0  # 新增 Unknown 計數
     error_count = 0
 
     # 2. 執行過程：處理檔案 (使用 Progress Bar)
@@ -171,6 +179,8 @@ def scan_directory(directory: str):
                     vector_count += 1
                 elif analysis["type"] == "Raster":
                     raster_count += 1
+                else:
+                    unknown_count += 1
             else:
                 error_count += 1
 
@@ -223,6 +233,7 @@ def scan_directory(directory: str):
         f"----------------------------------\n"
         f"向量 PDF (Vector): [bold blue]{vector_count}[/bold blue]\n"
         f"點陣 PDF (Raster): [bold magenta]{raster_count}[/bold magenta]\n"
+        f"未知/空白 (Unknown): [dim]{unknown_count}[/dim]\n"
         f"分析失敗 (Error) : [bold red]{error_count}[/bold red]"
     )
 

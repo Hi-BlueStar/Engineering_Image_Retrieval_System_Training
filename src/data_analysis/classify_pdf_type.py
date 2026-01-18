@@ -27,6 +27,7 @@ custom_theme = Theme(
         "success": "bold green",
         "vector": "blue",
         "raster": "magenta",
+        "vector_draw": "bold yellow",
     }
 )
 
@@ -57,37 +58,42 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
             )
             vector_pages_count = 0
             raster_pages_count = 0
+            vector_draw_pages_count = 0
 
             for i in range(pages_to_check):
                 page = doc.load_page(i)
                 text = page.get_text().strip()
                 images = page.get_images()
+                drawings = page.get_drawings()
 
-                # 判定邏輯優化：降低門檻以減少 Unknown
-                # 只要頁面有少量文字 (>3 chars)，通常代表有文字層 (可能是標題、頁碼或少量內文)
+                # 判定邏輯優化
+                # 1. 優先檢查文字層 (RAG 最重要)
                 if len(text) > 3:
                     vector_pages_count += 1
-                # 若文字極少但有圖片，視為點陣頁
+                # 2. 檢查是否為點陣圖 (掃描檔)
                 elif len(images) > 0:
                     raster_pages_count += 1
-                # 若既無字也無圖，暫不計入主要分類，視為空白頁
+                # 3. 檢查是否為純向量繪圖 (無文字、無圖，但有繪圖指令，如 CAD 轉曲線)
+                elif len(drawings) > 0:
+                    vector_draw_pages_count += 1
+                # 若既無字、無圖也無繪圖指令，視為空白
 
             # 計算文字頁比例
             text_ratio = vector_pages_count / pages_to_check
 
-            # 根據分數決定類型 (優先判定 Vector)
+            # 根據分數決定類型 (優先級：Vector > Raster > VectorDrawing)
             if vector_pages_count > 0:
-                # 只要採樣中有任何一頁包含可搜尋文字，就歸類為 Vector
-                # 這樣可以捕捉到混合型文件或字數較少的向量檔
                 file_type = "Vector"
                 reason = f"採樣 {pages_to_check} 頁中有 {vector_pages_count} 頁含文字層"
             elif raster_pages_count > 0:
                 file_type = "Raster"
                 reason = "無可搜尋文字，但檢測到圖片"
+            elif vector_draw_pages_count > 0:
+                file_type = "VectorDrawing"
+                reason = "無文字/圖片，但包含向量繪圖指令 (如轉曲線文字或工程圖)"
             else:
-                # 真的完全沒字也沒圖 (極少見，可能是純線條繪圖或全白)
                 file_type = "Unknown"
-                reason = "無文字且無顯著圖片 (可能為空白或純向量繪圖)"
+                reason = "無內容 (空白或無法識別)"
 
             return {
                 "status": "success",
@@ -139,7 +145,8 @@ def scan_directory(directory: str):
     results = []
     vector_count = 0
     raster_count = 0
-    unknown_count = 0  # 新增 Unknown 計數
+    vector_draw_count = 0
+    unknown_count = 0
     error_count = 0
 
     # 2. 執行過程：處理檔案 (使用 Progress Bar)
@@ -175,10 +182,13 @@ def scan_directory(directory: str):
 
             # 統計數據
             if analysis["status"] == "success":
-                if analysis["type"] == "Vector":
+                t = analysis["type"]
+                if t == "Vector":
                     vector_count += 1
-                elif analysis["type"] == "Raster":
+                elif t == "Raster":
                     raster_count += 1
+                elif t == "VectorDrawing":
+                    vector_draw_count += 1
                 else:
                     unknown_count += 1
             else:
@@ -206,9 +216,11 @@ def scan_directory(directory: str):
 
             # 根據類型上色
             if type_str == "Vector":
-                type_style = "[bold blue]向量 (Vector)[/bold blue]"
+                type_style = "[bold blue]向量文字 (Vector)[/bold blue]"
             elif type_str == "Raster":
-                type_style = "[bold magenta]點陣 (Raster)[/bold magenta]"
+                type_style = "[bold magenta]點陣掃描 (Raster)[/bold magenta]"
+            elif type_str == "VectorDrawing":
+                type_style = "[bold yellow]向量繪圖 (Draw)[/bold yellow]"
             else:
                 type_style = "[dim]未知 (Unknown)[/dim]"
 
@@ -231,8 +243,9 @@ def scan_directory(directory: str):
         f"掃描位置: [u]{escape(str(target_dir))}[/u]\n"
         f"總檔案數: [bold]{len(all_pdfs)}[/bold]\n"
         f"----------------------------------\n"
-        f"向量 PDF (Vector): [bold blue]{vector_count}[/bold blue]\n"
-        f"點陣 PDF (Raster): [bold magenta]{raster_count}[/bold magenta]\n"
+        f"向量文字 (Text-based): [bold blue]{vector_count}[/bold blue]\n"
+        f"點陣掃描 (Image-based): [bold magenta]{raster_count}[/bold magenta]\n"
+        f"向量繪圖 (Vector-Draw): [bold yellow]{vector_draw_count}[/bold yellow]\n"
         f"未知/空白 (Unknown): [dim]{unknown_count}[/dim]\n"
         f"分析失敗 (Error) : [bold red]{error_count}[/bold red]"
     )

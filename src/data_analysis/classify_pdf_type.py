@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -28,17 +29,60 @@ custom_theme = Theme(
         "vector": "blue",
         "raster": "magenta",
         "vector_draw": "bold yellow",
+        "low_res": "bold red reverse",  # 用於低解析度警告
     }
 )
 
 console = Console(theme=custom_theme)
 
 
+def get_page_size_label(width: float, height: float) -> str:
+    """
+    根據寬高 (points) 判斷紙張規格。允許誤差 +/- 5 points。
+    """
+    # 確保 width 是短邊，方便比對
+    short, long = sorted([width, height])
+
+    sizes = {
+        (595, 842): "A4",
+        (842, 1191): "A3",
+        (1191, 1684): "A2",
+        (1684, 2384): "A1",
+        (2384, 3370): "A0",
+        (420, 595): "A5",
+        (612, 792): "Letter",
+        (612, 1008): "Legal",
+    }
+
+    for (w, h), name in sizes.items():
+        if abs(short - w) < 10 and abs(long - h) < 10:
+            return name
+
+    return f"{int(short)}x{int(long)}"
+
+
+def format_size(size_bytes: int) -> str:
+    """將 bytes 轉為易讀格式 (KB, MB)"""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+
 def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
     """
-    分析 PDF 檔案類型的核心邏輯。
+    分析 PDF 檔案類型、頁面屬性、指紋與解析度。
     """
     try:
+        # 0. 檔案指紋 (Fingerprinting)
+        stat = file_path.stat()
+        file_fingerprint = {
+            "size_str": format_size(stat.st_size),
+            "created": datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d"),
+            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d"),
+        }
+
         # 使用 context manager 確保檔案會被關閉
         with fitz.open(file_path) as doc:
             total_pages = len(doc)
@@ -49,8 +93,22 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
                     "type": "Empty",
                     "ratio": 0.0,
                     "reason": "PDF 無頁面",
+                    "fingerprint": file_fingerprint,
+                    "page_attr": {"count": 0, "size": "N/A"},
+                    "dpi_stats": {"avg": 0, "status": "N/A"},
                 }
 
+            # 1. 頁面屬性採樣 (取第一頁做代表)
+            p0 = doc[0]
+            page_size_label = get_page_size_label(p0.rect.width, p0.rect.height)
+            page_attr = {
+                "count": total_pages,
+                "size": page_size_label,
+                "width": p0.rect.width,
+                "height": p0.rect.height,
+            }
+
+            # 設定採樣範圍
             pages_to_check = (
                 min(total_pages, page_sample_limit)
                 if page_sample_limit
@@ -60,50 +118,68 @@ def classify_pdf_type(file_path: Path, page_sample_limit: int = 5) -> dict:
             raster_pages_count = 0
             vector_draw_pages_count = 0
 
+            # DPI 統計容器
+            dpi_values = []
+
             for i in range(pages_to_check):
                 page = doc.load_page(i)
                 text = page.get_text().strip()
                 images = page.get_images()
                 drawings = page.get_drawings()
 
-                # 判定邏輯優化
-                # 1. 優先檢查文字層 (RAG 最重要)
+                # DPI 計算邏輯 (針對頁面上的圖片)
+                for img in images:
+                    xref = img[0]
+                    img_width = img[2]  # 像素寬度
+                    # 獲取圖片在頁面上的顯示位置 (可能有多次引用)
+                    img_rects = page.get_image_rects(xref)
+                    for rect in img_rects:
+                        if rect.width > 0:
+                            # DPI = 像素 / (英吋) = 像素 / (points / 72)
+                            dpi = img_width / (rect.width / 72)
+                            dpi_values.append(dpi)
+
+                # 判定邏輯
                 if len(text) > 3:
                     vector_pages_count += 1
-                # 2. 檢查是否為點陣圖 (掃描檔)
                 elif len(images) > 0:
                     raster_pages_count += 1
-                # 3. 檢查是否為純向量繪圖 (無文字、無圖，但有繪圖指令，如 CAD 轉曲線)
                 elif len(drawings) > 0:
                     vector_draw_pages_count += 1
-                # 若既無字、無圖也無繪圖指令，視為空白
 
-            # 計算文字頁比例
+            # 計算平均 DPI
+            avg_dpi = int(sum(dpi_values) / len(dpi_values)) if dpi_values else 0
+            dpi_status = "OK"
+            if avg_dpi > 0 and avg_dpi < 200:
+                dpi_status = "Low Res"  # 低解析度警告
+
+            # 綜合判定類型
             text_ratio = vector_pages_count / pages_to_check
 
-            # 根據分數決定類型 (優先級：Vector > Raster > VectorDrawing)
             if vector_pages_count > 0:
                 file_type = "Vector"
-                reason = f"採樣 {pages_to_check} 頁中有 {vector_pages_count} 頁含文字層"
+                reason = f"含文字層 ({vector_pages_count}/{pages_to_check} 頁)"
             elif raster_pages_count > 0:
                 file_type = "Raster"
-                reason = "無可搜尋文字，但檢測到圖片"
+                reason = "掃描/圖片檔"
             elif vector_draw_pages_count > 0:
                 file_type = "VectorDrawing"
-                reason = "無文字/圖片，但包含向量繪圖指令 (如轉曲線文字或工程圖)"
+                reason = "向量繪圖"
             else:
                 file_type = "Unknown"
-                reason = "無內容 (空白或無法識別)"
+                reason = "空白/未知"
 
             return {
                 "status": "success",
                 "type": file_type,
                 "ratio": round(text_ratio, 2),
                 "reason": reason,
+                "fingerprint": file_fingerprint,
+                "page_attr": page_attr,
+                "dpi_stats": {"avg": avg_dpi, "status": dpi_status},
             }
 
     except Exception as e:
-        # 捕捉所有異常並回傳錯誤訊息
         return {"status": "error", "msg": str(e)}
 
 
@@ -119,7 +195,6 @@ def scan_directory(directory: str):
 
     all_pdfs = []
 
-    # 1. 初始化階段：掃描檔案列表 (使用 Spinner)
     console.print(
         Panel(
             f"正在掃描資料夾：[bold cyan]{escape(str(target_dir))}[/bold cyan]",
@@ -131,9 +206,7 @@ def scan_directory(directory: str):
     with console.status(
         "[bold green]正在搜尋 PDF 檔案...[/bold green]", spinner="dots"
     ):
-        # rglob 會遞迴搜尋所有子資料夾
         all_pdfs = list(target_dir.rglob("*.pdf"))
-        # 模擬一點延遲讓使用者看得到動畫 (若檔案很少)
         time.sleep(0.5)
 
     if not all_pdfs:
@@ -146,11 +219,9 @@ def scan_directory(directory: str):
     vector_count = 0
     raster_count = 0
     vector_draw_count = 0
-    unknown_count = 0
+    low_res_count = 0  # 低解析度計數
     error_count = 0
 
-    # 2. 執行過程：處理檔案 (使用 Progress Bar)
-    # 自定義進度條樣式
     progress_layout = [
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -163,24 +234,20 @@ def scan_directory(directory: str):
         task = progress.add_task("[cyan]分析中...", total=len(all_pdfs))
 
         for pdf_path in all_pdfs:
-            # 顯示當前正在處理的檔名 (截斷過長的檔名)
             display_name = (
                 pdf_path.name if len(pdf_path.name) < 30 else pdf_path.name[:27] + "..."
             )
             progress.update(task, description=f"[cyan]分析中: {escape(display_name)}")
 
-            # 執行分析
             analysis = classify_pdf_type(pdf_path)
 
-            # 儲存結果
             result_entry = {
                 "file": pdf_path.name,
-                "path": str(pdf_path.relative_to(target_dir)),  # 顯示相對路徑
+                "path": str(pdf_path.relative_to(target_dir)),
                 "analysis": analysis,
             }
             results.append(result_entry)
 
-            # 統計數據
             if analysis["status"] == "success":
                 t = analysis["type"]
                 if t == "Vector":
@@ -189,80 +256,98 @@ def scan_directory(directory: str):
                     raster_count += 1
                 elif t == "VectorDrawing":
                     vector_draw_count += 1
-                else:
-                    unknown_count += 1
+
+                # 統計低解析度 (僅針對有點陣圖的檔案)
+                if analysis["dpi_stats"]["status"] == "Low Res" and (
+                    t == "Raster" or analysis["dpi_stats"]["avg"] > 0
+                ):
+                    low_res_count += 1
             else:
                 error_count += 1
 
-            # 更新進度
             progress.advance(task)
 
-    # 3. 結果展示：繪製表格
-    table = Table(title="PDF 類型分析報告", box=box.ROUNDED, show_lines=True)
+    # 結果展示表格
+    table = Table(title="PDF 深度審計報告", box=box.ROUNDED, show_lines=True)
 
-    table.add_column("檔名 (相對路徑)", style="cyan", no_wrap=False)
+    table.add_column("檔名", style="cyan", no_wrap=False)
     table.add_column("類型", justify="center")
-    table.add_column("文字覆蓋率", justify="right")
-    table.add_column("備註 / 錯誤訊息", style="white")
+    table.add_column("大小/頁數", justify="right")
+    table.add_column("規格", justify="center")
+    table.add_column("DPI (Avg)", justify="right")
+    table.add_column("日期", justify="right", style="dim")
 
     for res in results:
         path_str = escape(res["path"])
         analysis = res["analysis"]
 
         if analysis["status"] == "success":
+            # 準備數據
             type_str = analysis["type"]
-            ratio_str = f"{analysis['ratio'] * 100:.0f}%"
-            reason_str = analysis["reason"]
+            fp = analysis["fingerprint"]
+            pa = analysis["page_attr"]
+            dpi_info = analysis["dpi_stats"]
 
-            # 根據類型上色
+            size_page_str = f"{fp['size_str']}\n{pa['count']} 頁"
+            date_str = f"C: {fp['created']}\nM: {fp['modified']}"
+
+            # DPI 顯示
+            dpi_val = dpi_info["avg"]
+            dpi_display = f"{dpi_val} DPI" if dpi_val > 0 else "-"
+            if dpi_info["status"] == "Low Res":
+                dpi_display = f"[bold red]{dpi_display}[/bold red]"
+
+            # 類型樣式
             if type_str == "Vector":
-                type_style = "[bold blue]向量文字 (Vector)[/bold blue]"
+                type_style = "[bold blue]Vector[/bold blue]"
             elif type_str == "Raster":
-                type_style = "[bold magenta]點陣掃描 (Raster)[/bold magenta]"
+                type_style = "[bold magenta]Raster[/bold magenta]"
             elif type_str == "VectorDrawing":
-                type_style = "[bold yellow]向量繪圖 (Draw)[/bold yellow]"
+                type_style = "[bold yellow]Draw[/bold yellow]"
             else:
-                type_style = "[dim]未知 (Unknown)[/dim]"
+                type_style = "[dim]Unknown[/dim]"
 
-            table.add_row(path_str, type_style, ratio_str, reason_str)
+            table.add_row(
+                path_str, type_style, size_page_str, pa["size"], dpi_display, date_str
+            )
         else:
-            # 錯誤處理顯示
             err_msg = escape(analysis["msg"])
             table.add_row(
                 path_str,
                 "[bold red]ERROR[/bold red]",
                 "-",
-                f"[bold red]{err_msg}[/bold red]",
+                "-",
+                "-",
+                f"[red]{err_msg}[/red]",
             )
 
     console.print("\n")
     console.print(table)
 
-    # 4. 總結報告面板
+    # 總結報告
     summary_text = (
-        f"掃描位置: [u]{escape(str(target_dir))}[/u]\n"
-        f"總檔案數: [bold]{len(all_pdfs)}[/bold]\n"
-        f"----------------------------------\n"
-        f"向量文字 (Text-based): [bold blue]{vector_count}[/bold blue]\n"
-        f"點陣掃描 (Image-based): [bold magenta]{raster_count}[/bold magenta]\n"
-        f"向量繪圖 (Vector-Draw): [bold yellow]{vector_draw_count}[/bold yellow]\n"
-        f"未知/空白 (Unknown): [dim]{unknown_count}[/dim]\n"
-        f"分析失敗 (Error) : [bold red]{error_count}[/bold red]"
+        f"位置: [u]{escape(str(target_dir))}[/u] | 總數: [bold]{len(all_pdfs)}[/bold]\n"
+        f"----------------------------------------\n"
+        f"向量文字 (Vector) : [bold blue]{vector_count}[/bold blue]\n"
+        f"點陣掃描 (Raster) : [bold magenta]{raster_count}[/bold magenta]\n"
+        f"向量繪圖 (Draw)   : [bold yellow]{vector_draw_count}[/bold yellow]\n"
+        f"----------------------------------------\n"
+        f"低解析度警示 (<200): [bold red]{low_res_count}[/bold red]\n"
+        f"分析失敗 (Error)  : [red]{error_count}[/red]"
     )
 
     console.print(
         Panel(
             summary_text,
-            title="[bold green]執行完畢[/bold green]",
-            subtitle="PDF Analysis Tool",
+            title="[bold green]審計完成[/bold green]",
+            subtitle="PDF Analysis Tool v2.0",
             border_style="green",
-            box=box.HEAVY_EDGE,  # 重線風格
+            box=box.HEAVY_EDGE,
             padding=(1, 2),
         )
     )
 
 
 if __name__ == "__main__":
-    # 在此輸入您想要掃描的資料夾路徑，"." 代表當前目錄
-    target_directory = "."
+    target_directory = "./data/吉輔提供資料Clean"
     scan_directory(target_directory)

@@ -1,0 +1,34 @@
+services:
+  retrieval-dev:
+    image: engineering_image_retrieval_system_dev:v3.0
+    container_name: engineering_image_retrieval_system_dev
+    restart: unless-stopped
+
+    # 埠號對應 (-p 2222:22)
+    ports:
+      - "2222:22"
+
+    # 硬體加速配置 (--gpus all)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+
+    # 核心開發邏輯：掛載本地原始碼
+    volumes:
+      - ./:/workspace # 將當前目錄掛載至容器內的開發路徑
+
+    # 設定工作目錄
+    working_dir: /workspace
+
+    # 保持容器運行 (對應 -d 後的互動需求)
+    tty: true
+    stdin_open: true
+
+    # 環境變數預留
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1

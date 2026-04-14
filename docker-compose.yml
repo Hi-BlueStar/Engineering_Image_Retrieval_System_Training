@@ -1,14 +1,18 @@
 services:
   retrieval-dev:
+    # 建議在此處指定 build context，方便直接構建
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: engineering_image_retrieval_system_dev:v3.0
     container_name: engineering_image_retrieval_system_dev
     restart: unless-stopped
-
-    # 埠號對應 (-p 2222:22)
+    # 增大共享記憶體，這對 PyTorch DataLoader 很重要
+    shm_size: '100gb'
     ports:
       - "2222:22"
 
-    # 硬體加速配置 (--gpus all)
+    # GPU 配置 (新版 Docker Compose 語法)
     deploy:
       resources:
         reservations:
@@ -17,18 +21,18 @@ services:
               count: all
               capabilities: [ gpu ]
 
-    # 核心開發邏輯：掛載本地原始碼
     volumes:
-      - ./:/workspace # 將當前目錄掛載至容器內的開發路徑
+      # 掛載原始碼
+      - ./:/workspace
+      # 【重要技巧】為了防止本地的 .venv 汙染容器，或者容器的操作汙染本地
+      # 我們可以使用匿名 Volume 遮蔽它，或者在 .dockerignore 排除。
+      # 由於我們設定了 UV_PROJECT_ENVIRONMENT，即使掛載了也無妨，
+      # 但為了乾淨，建議不要在本地保留 .venv，或使用下方這行遮蔽：
+      # - /workspace/.venv 
 
-    # 設定工作目錄
     working_dir: /workspace
-
-    # 保持容器運行 (對應 -d 後的互動需求)
     tty: true
     stdin_open: true
-
-    # 環境變數預留
+    # 這裡的 environment 只對 docker 程序有效，對 SSH 無效 (已由 Dockerfile 處理)
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - PYTHONUNBUFFERED=1

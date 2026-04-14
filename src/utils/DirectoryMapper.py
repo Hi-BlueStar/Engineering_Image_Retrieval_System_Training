@@ -132,7 +132,7 @@ class DirectoryMapper:
 # --- 使用範例 ---
 if __name__ == "__main__":
     # 設定要掃描的路徑 (預設為當前目錄)
-    target_directory = "results/batch2/engineering_images_100dpi_2"
+    target_directory = "dataset"
 
     mapper = DirectoryMapper(target_directory)
 

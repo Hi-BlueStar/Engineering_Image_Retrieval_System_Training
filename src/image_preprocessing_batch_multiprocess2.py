@@ -775,6 +775,6 @@ def demo(
 
 if __name__ == "__main__":
     demo(
-        input_dir="./data/engineering_images_Clean_100dpi",
-        output_root="./results/batch2/engineering_images_Clean_100dpi",
+        input_dir="./data/engineering_images_100dpi",
+        output_root="./results/batch/engineering_images_100dpi",
     )

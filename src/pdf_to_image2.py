@@ -489,8 +489,8 @@ if __name__ == "__main__":
 
     try:
         df_manifest = run(
-            root_dir=r"./data/吉輔提供資料Clean",  # 根目錄（含類別資料夾與 PDF）
-            output_dir=r"./data/engineering_images_Clean_100dpi",  # 輸出根目錄
+            root_dir=r"./data/吉輔提供資料",  # 根目錄（含類別資料夾與 PDF）
+            output_dir=r"./data/engineering_images_100dpi",  # 輸出根目錄
             dpi=100,  # 影像解析度（DPI）
             max_workers=16,  # 預設為 CPU 合理值
         )

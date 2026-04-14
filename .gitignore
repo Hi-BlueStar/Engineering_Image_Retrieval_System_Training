@@ -23,6 +23,7 @@ demo/
 docs/
 .devcontainer
 .env
+*.rar
 
 .$專案規劃.drawio.bkp
 

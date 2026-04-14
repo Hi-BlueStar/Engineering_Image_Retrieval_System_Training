@@ -24,7 +24,7 @@ outputs/
 .devcontainer
 .env
 *.env*
-**/demo/
+**demo/**
 **/docs/
 .$專案規劃.drawio.bkp
 

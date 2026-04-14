@@ -12,20 +12,18 @@ wheels/
 .venv
 
 # 檔案不須儲存
-**/data/
-**/chroma_db_store/
-**/chroma_db/
+chroma_db_store/
+chroma_db/
 results/
-demo/image_to_be_searched/
-demo/search_results_viz/
+data/
 dataset/
 output/
 outputs/
+demo/
+docs/
 .devcontainer
 .env
-*.env*
-**demo/**
-**/docs/
+
 .$專案規劃.drawio.bkp
 
 *id_rsa*

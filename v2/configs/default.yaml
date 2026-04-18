@@ -1,0 +1,54 @@
+# 預設訓練與資料管線參數 (預設由 v2/src/config/structured.py 中的 TrainingConfig 載入與驗證)
+# 支援使用 OmegaConf 從命令列覆寫，例如: python scripts/train.py data.batch_size=128
+
+data:
+  raw_zip_path: null
+  raw_pdf_dir: "data/raw_pdfs"
+  converted_image_dir: "data/converted_images"
+  preprocessed_image_dir: "data/preprocessed_images"
+  dataset_root: "dataset"
+  
+  # PDF 轉換
+  pdf_dpi: 100
+  pdf_max_workers: 16
+  
+  # 影像前處理
+  preprocess_top_n: 5
+  preprocess_remove_largest: true
+  preprocess_padding: 2
+  preprocess_max_attempts: 400
+  preprocess_random_count: 10
+  preprocess_max_workers: 12
+  
+  # 資料集分割
+  split_ratio: 0.8
+  n_runs: 5
+  base_seed: 42
+  train_manifest: "train_manifest.csv"
+  val_manifest: "val_manifest.csv"
+
+model:
+  backbone: "resnet18"
+  pretrained: true
+  in_channels: 1
+  proj_dim: 2048
+  pred_hidden: 512
+
+training:
+  img_size: 512
+  epochs: 200
+  batch_size: 64
+  lr: 2.0e-5
+  weight_decay: 1.0e-5
+  num_workers: 8
+  img_exts: [".jpg", ".png", ".bmp", ".tif", ".webp"]
+
+output:
+  output_dir: "outputs"
+  exp_name: "simsiam_v2_exp"
+  save_freq: 10
+
+pipeline:
+  skip_zip_extraction: false
+  skip_pdf_conversion: false
+  skip_preprocessing: false

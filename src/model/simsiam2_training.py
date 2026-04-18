@@ -61,7 +61,7 @@ class Config:
     # --- 資料設定 ---
     dataset_root: str = "dataset"  # 資料集根目錄
     # 指定 Run 資料夾內的相對路徑結構
-    train_subpath: str = "Component_Dataset/train" 
+    train_subpath: str = "Component_Dataset/train"
     val_subpath: str = "Component_Dataset/val"
 
     img_size: int = 512  # 圖片輸入尺寸

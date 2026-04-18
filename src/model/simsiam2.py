@@ -14,6 +14,7 @@ References:
     Chen & He. "Exploring Simple Siamese Representation Learning". CVPR 2021.
 """
 
+import contextlib
 from pathlib import Path
 
 import torch
@@ -301,8 +302,8 @@ def train_one_epoch(
         amp_ctx = (
             torch.amp.autocast(device_type="cuda", dtype=torch.float16)
             if use_amp
-            else torch.no_grad()
-        )  # no_grad is dummy here
+            else contextlib.nullcontext()
+        )
     else:
         amp_ctx = torch.cuda.amp.autocast(enabled=use_amp)
 

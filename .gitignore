@@ -24,6 +24,7 @@ docs/
 .devcontainer
 .env
 *.rar
+temp/
 
 .$專案規劃.drawio.bkp
 

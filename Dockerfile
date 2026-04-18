@@ -59,7 +59,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libglib2.0-0 \
     libgl1-mesa-glx \
     # 工具與 SSH
-    openssh-server sudo libdbus-1-3 tmux curl git wget vim nano \
+    openssh-server sudo libdbus-1-3 tmux curl git wget vim nano p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. 複製編譯好的虛擬環境與 uv 工具

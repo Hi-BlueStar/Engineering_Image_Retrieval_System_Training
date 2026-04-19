@@ -136,6 +136,11 @@ def main() -> None:
         padding=d.preprocess_padding,
         max_attempts=d.preprocess_max_attempts,
         random_count=d.preprocess_random_count,
+        use_connected_components=d.use_connected_components,
+        use_topology_analysis=d.use_topology_analysis,
+        remove_gifu_logo=d.remove_gifu_logo,
+        logo_template_path=d.logo_template_path,
+        logo_mask_region=d.logo_mask_region,
     )
     preprocess_images(prep_cfg, skip=d.skip_preprocessing)
     t.stop()
@@ -155,13 +160,14 @@ def main() -> None:
     for run_idx in range(d.n_runs):
         seed = d.base_seed + run_idx
         run_name = f"Run_{run_idx + 1:02d}_Seed_{seed}"
-        split_dataset(
+        n_train, n_test = split_dataset(
             source_root=d.preprocessed_image_dir,
             output_root=d.dataset_dir,
             run_name=run_name,
             split_ratio=d.split_ratio,
             seed=seed,
         )
+        logger.info("  [%s] train_stems=%d, test_stems=%d", run_name, n_train, n_test)
     t.stop()
 
     # ========================================================

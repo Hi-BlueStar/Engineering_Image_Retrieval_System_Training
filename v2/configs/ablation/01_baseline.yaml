@@ -1,0 +1,62 @@
+# ==============================================================================
+# 消融實驗 01：Baseline（無任何工程圖前處理）
+# ==============================================================================
+# 策略：原始影像 + 最簡增強（RandomResizedCrop + Flip）
+# 所有工程圖假設均關閉，作為對照組
+# ==============================================================================
+
+data:
+  raw_pdf_dir: "data/raw_pdfs"
+  converted_image_dir: "data/converted_images"
+  pdf_dpi: 100
+  pdf_max_workers: 16
+  skip_pdf_conversion: false
+
+  preprocessed_image_dir: "data/preprocessed/01_baseline"
+  use_connected_components: false
+  use_topology_analysis: false
+  remove_gifu_logo: false
+  preprocess_random_count: 1
+  skip_preprocessing: false
+
+  dataset_dir: "dataset/01_baseline"
+  split_ratio: 0.8
+  test_split_ratio: 0.2
+  n_runs: 1
+  base_seed: 42
+
+  labeled_data_path: "data/converted_images"
+  eval_top_k_values: [1, 5, 10]
+
+model:
+  backbone: "resnet18"
+  pretrained: true
+  in_channels: 1
+  proj_dim: 2048
+  proj_hidden: null
+  pred_hidden: 512
+
+training:
+  img_size: 512
+  epochs: 200
+  batch_size: 64
+  lr: 2.0e-5
+  weight_decay: 1.0e-5
+  num_workers: 4
+  prefetch_factor: 2
+  use_amp: true
+  scheduler: "cosine"
+  grad_clip: 1.0
+  use_augmentation: false
+  use_gpu_augmentation: true
+
+experiment:
+  output_dir: "outputs/ablation"
+  exp_name: "01_baseline"
+  save_freq: 50
+  log_file: "training.log"
+
+logging:
+  level: "INFO"
+  log_to_file: true
+  use_rich: true

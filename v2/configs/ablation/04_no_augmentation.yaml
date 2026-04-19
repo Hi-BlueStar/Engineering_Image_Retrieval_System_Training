@@ -1,0 +1,70 @@
+# ==============================================================================
+# 消融實驗 04：有 CC + 拓撲分析 + Logo 移除，無 Data Augmentation
+# ==============================================================================
+# 有：CC + 拓撲分析 + Gifu Logo 移除
+# 無：工程圖特定 Data Augmentation（僅用最小增強：RandomCrop + Flip）
+# 目的：驗證旋轉/ColorJitter 等工程圖增強的必要性
+# ==============================================================================
+
+data:
+  raw_pdf_dir: "data/raw_pdfs"
+  converted_image_dir: "data/converted_images"
+  pdf_dpi: 100
+  pdf_max_workers: 16
+  skip_pdf_conversion: false
+
+  preprocessed_image_dir: "data/preprocessed/04_no_augmentation"
+  preprocess_top_n: 5
+  preprocess_remove_largest: true
+  preprocess_padding: 2
+  preprocess_max_attempts: 400
+  preprocess_random_count: 10
+  preprocess_max_workers: 12
+  use_connected_components: true
+  use_topology_analysis: true
+  remove_gifu_logo: true
+  logo_template_path: null
+  logo_mask_region: null
+  skip_preprocessing: false
+
+  dataset_dir: "dataset/04_no_augmentation"
+  split_ratio: 0.8
+  test_split_ratio: 0.2
+  n_runs: 1
+  base_seed: 42
+
+  labeled_data_path: "data/converted_images"
+  eval_top_k_values: [1, 5, 10]
+
+model:
+  backbone: "resnet18"
+  pretrained: true
+  in_channels: 1
+  proj_dim: 2048
+  proj_hidden: null
+  pred_hidden: 512
+
+training:
+  img_size: 512
+  epochs: 200
+  batch_size: 64
+  lr: 2.0e-5
+  weight_decay: 1.0e-5
+  num_workers: 4
+  prefetch_factor: 2
+  use_amp: true
+  scheduler: "cosine"
+  grad_clip: 1.0
+  use_augmentation: false
+  use_gpu_augmentation: true
+
+experiment:
+  output_dir: "outputs/ablation"
+  exp_name: "04_no_augmentation"
+  save_freq: 50
+  log_file: "training.log"
+
+logging:
+  level: "INFO"
+  log_to_file: true
+  use_rich: true

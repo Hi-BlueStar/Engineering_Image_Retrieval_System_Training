@@ -1,15 +1,26 @@
-"""無標籤影像資料集模組 (Unlabeled Image Dataset)。
+"""影像資料集模組 (Image Dataset Module)。
 
-用於 SimSiam 自監督學習：每次 __getitem__ 對同一影像
-透過增強器生成兩個視角，作為正樣本對。
+============================================================
+提供兩種資料集類別：
+
+1. **SingleViewDataset**（推薦，GPU 增強模式）：
+   - 每次 __getitem__ 回傳單張 resize 後的 raw tensor [C, H, W]
+   - Trainer 在 GPU 上呼叫 GPUAugmentation.create_views() 生成雙視角
+   - 大幅降低 CPU worker 負擔，解決 CPU 瓶頸
+
+2. **UnlabeledImageDataset**（向下相容，CPU 增強模式）：
+   - 每次 __getitem__ 回傳 (view1, view2) CPU 增強後的雙視角
+   - 保留原有行為，供 use_gpu_augmentation=False 時使用
+============================================================
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import torch
+import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -17,9 +28,56 @@ from src.logger import get_logger
 
 logger = get_logger(__name__)
 
+_IMG_EXTS = {".jpg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+class SingleViewDataset(Dataset):
+    """GPU 增強模式資料集：回傳 resize 後的單張 raw tensor。
+
+    Worker 只做最輕量的工作（I/O + resize + ToTensor），
+    增強在 GPU 上由 GPUAugmentation 完成。
+
+    Args:
+        root: 影像根目錄（遞迴搜尋）。
+        img_size: 輸出影像邊長（正方形，僅做 resize）。
+        img_exts: 支援的影像副檔名列表。
+        in_channels: 輸入通道數；``1`` 載入灰階，``3`` 載入 RGB。
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        img_size: int,
+        img_exts: List[str],
+        in_channels: int = 1,
+    ) -> None:
+        self.root = root
+        self._mode = "L" if in_channels == 1 else "RGB"
+        self.images = self._scan(img_exts)
+        # 只做 resize + ToTensor（不做 normalize，交給 GPU aug）
+        self._transform = T.Compose([
+            T.Resize((img_size, img_size)),
+            T.ToTensor(),
+        ])
+        logger.info(
+            "SingleViewDataset: root=%s, n=%d, mode=%s",
+            root, len(self.images), self._mode,
+        )
+
+    def _scan(self, img_exts: List[str]) -> List[Path]:
+        ext_set = {e.lower() for e in img_exts}
+        return sorted(p for p in self.root.rglob("*") if p.suffix.lower() in ext_set)
+
+    def __len__(self) -> int:
+        return len(self.images)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        img = Image.open(self.images[idx]).convert(self._mode)
+        return self._transform(img)
+
 
 class UnlabeledImageDataset(Dataset):
-    """遞迴掃描目錄下所有影像，回傳雙視角增強結果。
+    """CPU 增強模式資料集（向下相容）：回傳 (view1, view2) 增強雙視角。
 
     Args:
         root: 影像根目錄（遞迴搜尋）。
@@ -42,18 +100,12 @@ class UnlabeledImageDataset(Dataset):
 
         logger.info(
             "UnlabeledImageDataset: root=%s, n=%d, mode=%s",
-            root,
-            len(self.images),
-            self._mode,
+            root, len(self.images), self._mode,
         )
 
     def _scan(self, img_exts: List[str]) -> List[Path]:
         ext_set = {e.lower() for e in img_exts}
-        paths = [
-            p for p in self.root.rglob("*")
-            if p.suffix.lower() in ext_set
-        ]
-        return sorted(paths)
+        return sorted(p for p in self.root.rglob("*") if p.suffix.lower() in ext_set)
 
     def __len__(self) -> int:
         return len(self.images)

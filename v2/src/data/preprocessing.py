@@ -1,15 +1,20 @@
 """影像前處理模組 (Image Preprocessing Module)。
 
 ============================================================
-針對工程圖 PNG 進行連通元件分析，提取關鍵元件並生成隨機排列變體。
+針對工程圖 PNG 進行前處理，支援消融研究的四個可開關模組：
 
-流程：
-    1. 載入灰階影像，Otsu 二值化（反轉：元件為白色）
-    2. 連通元件分析，依面積排序
-    3. 可選移除最大元件（通常為圖框）
-    4. 保留 top_n 個最大元件並裁切（含邊距）
-    5. 將裁切結果隨機排列至空白畫布，重複 random_count 次
-    6. 儲存為 PNG（白底黑圖，與原圖格式相同）
+    1. remove_gifu_logo: 移除 Gifu 標誌（Otsu 反轉前套用）
+    2. use_connected_components: 連通元件分析 + 隨機排列
+    3. use_topology_analysis:
+        - 若有 CC：依拓撲複雜度排序元件（孔洞數 desc）
+        - 若無 CC：對整張影像進行拓撲感知遮罩
+
+輸出結構（保留類別子目錄，供分層抽樣使用）::
+
+    <output_root>/<class_name>/<image_stem>/arr_000.png ... arr_N.png
+
+若輸入為無類別平坦目錄，<class_name> 省略，直接在
+<output_root>/<image_stem>/ 下輸出。
 ============================================================
 """
 
@@ -17,7 +22,7 @@ from __future__ import annotations
 
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -36,14 +41,19 @@ class PreprocessConfig:
     """前處理管線設定。
 
     Attributes:
-        input_dir: 輸入影像目錄（PDF 轉換輸出）。
+        input_dir: 輸入影像目錄（支援類別子目錄結構）。
         output_root: 前處理結果根目錄。
         max_workers: 並行程序數。
         top_n: 保留的最大元件數。
-        remove_largest: 是否移除面積最大的元件（圖框）。
+        remove_largest: 是否移除面積最大的元件（通常為圖框）。
         padding: 裁切邊距（像素）。
         max_attempts: 隨機放置嘗試次數上限。
         random_count: 每張影像生成的排列變體數。
+        use_connected_components: 是否啟用連通元件分析。
+        use_topology_analysis: 是否啟用拓撲感知排序/遮罩。
+        remove_gifu_logo: 是否移除 Gifu Logo。
+        logo_template_path: Logo 模板路徑（可選）。
+        logo_mask_region: Logo 遮罩區域比例（可選）。
     """
 
     input_dir: str
@@ -54,10 +64,15 @@ class PreprocessConfig:
     padding: int = 2
     max_attempts: int = 400
     random_count: int = 10
+    use_connected_components: bool = True
+    use_topology_analysis: bool = True
+    remove_gifu_logo: bool = True
+    logo_template_path: Optional[str] = None
+    logo_mask_region: Optional[List[float]] = None
 
 
 def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
-    """批次前處理所有影像。
+    """批次前處理所有影像，保留類別子目錄結構。
 
     Args:
         cfg: 前處理設定。
@@ -71,6 +86,7 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     dst_root = Path(cfg.output_root)
     dst_root.mkdir(parents=True, exist_ok=True)
 
+    # 支援類別子目錄與平坦目錄
     images = [
         p for p in src_dir.rglob("*")
         if p.suffix.lower() in _IMG_EXTS
@@ -81,10 +97,11 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
         return
 
     logger.info(
-        "開始影像前處理: %d 張，top_n=%d，remove_largest=%s，random_count=%d",
+        "開始影像前處理: %d 張 | CC=%s | Topology=%s | LogoRemoval=%s | variants=%d",
         len(images),
-        cfg.top_n,
-        cfg.remove_largest,
+        cfg.use_connected_components,
+        cfg.use_topology_analysis,
+        cfg.remove_gifu_logo,
         cfg.random_count,
     )
 
@@ -94,8 +111,15 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
         "padding": cfg.padding,
         "max_attempts": cfg.max_attempts,
         "random_count": cfg.random_count,
+        "use_connected_components": cfg.use_connected_components,
+        "use_topology_analysis": cfg.use_topology_analysis,
+        "remove_gifu_logo": cfg.remove_gifu_logo,
+        "logo_template_path": cfg.logo_template_path,
+        "logo_mask_region": cfg.logo_mask_region,
     }
-    args_list = [(str(p), str(dst_root), cfg_dict) for p in images]
+    args_list = [
+        (str(p), str(src_dir), str(dst_root), cfg_dict) for p in images
+    ]
 
     success = 0
     with ProcessPoolExecutor(max_workers=cfg.max_workers) as pool:
@@ -116,27 +140,74 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
 # ============================================================
 
 
-def _process_one(img_path: str, dst_root: str, cfg: dict) -> None:
+def _process_one(
+    img_path: str,
+    src_root: str,
+    dst_root: str,
+    cfg: dict,
+) -> None:
+    """處理單張影像：前處理 → 生成 random_count 個變體。"""
+    from src.data.logo_removal import remove_logo
+    from src.data.topology import sort_crops_by_topology, topology_guided_mask
+
     path = Path(img_path)
     gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if gray is None:
         raise RuntimeError(f"無法讀取影像: {img_path}")
 
-    binary = _binarize(gray)
-    crops = _extract_crops(binary, cfg["top_n"], cfg["remove_largest"], cfg["padding"])
-    if not crops:
-        return
+    # --- 保留類別相對路徑 ---
+    try:
+        rel = path.relative_to(src_root)
+        # rel = class_name/image.png OR image.png (flat)
+        class_part = rel.parent   # Path(".") if flat, else Path("class_name")
+    except ValueError:
+        class_part = Path(".")
 
-    h, w = gray.shape
-    out_dir = Path(dst_root) / path.stem
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # --- Step 1: Logo 移除 ---
+    if cfg["remove_gifu_logo"]:
+        gray = remove_logo(
+            gray,
+            template_path=cfg.get("logo_template_path"),
+            mask_region=cfg.get("logo_mask_region"),
+        )
 
-    rng = random.Random(hash(img_path))
-    for i in range(cfg["random_count"]):
-        canvas = _arrange(crops, h, w, cfg["max_attempts"], rng)
-        # 反轉回白底黑圖
-        result = 255 - canvas
-        cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), result)
+    # --- Step 2: 連通元件 or 全圖拓撲 ---
+    if cfg["use_connected_components"]:
+        binary = _binarize(gray)
+        crops = _extract_crops(
+            binary,
+            cfg["top_n"],
+            cfg["remove_largest"],
+            cfg["padding"],
+        )
+        if not crops:
+            return
+
+        if cfg["use_topology_analysis"]:
+            crops = sort_crops_by_topology(crops)
+
+        h, w = gray.shape
+        out_dir = Path(dst_root) / class_part / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        rng = random.Random(hash(img_path))
+        for i in range(cfg["random_count"]):
+            canvas = _arrange(crops, h, w, cfg["max_attempts"], rng)
+            result = 255 - canvas
+            cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), result)
+
+    else:
+        # 無 CC：全圖處理
+        if cfg["use_topology_analysis"]:
+            gray = topology_guided_mask(gray)
+
+        out_dir = Path(dst_root) / class_part / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 無 CC 時直接複製/儲存影像（仍生成 random_count 張以保持一致性）
+        rng = random.Random(hash(img_path))
+        for i in range(cfg["random_count"]):
+            cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), gray)
 
 
 def _binarize(gray: np.ndarray) -> np.ndarray:
@@ -162,7 +233,6 @@ def _extract_crops(
     if num_labels <= 1:
         return []
 
-    # 跳過背景 label=0，依面積排序
     components = [
         (i, int(stats[i, cv2.CC_STAT_AREA]))
         for i in range(1, num_labels)
@@ -203,7 +273,7 @@ def _arrange(
 ) -> np.ndarray:
     """將裁切圖隨機排列到黑色畫布（白色=元件）。"""
     canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
-    placed: List[Tuple[int, int, int, int]] = []  # (x1, y1, x2, y2)
+    placed: List[Tuple[int, int, int, int]] = []
 
     order = list(range(len(crops)))
     rng.shuffle(order)
@@ -230,9 +300,9 @@ def _find_position(
     max_attempts: int,
     rng: random.Random,
 ) -> Tuple[int, int]:
-    """找到不重疊的放置位置；失敗則隨機回傳。"""
-    max_y = canvas_h - crop_h
-    max_x = canvas_w - crop_w
+    """找到不重疊的放置位置；超過嘗試上限則隨機回傳。"""
+    max_y = max(0, canvas_h - crop_h)
+    max_x = max(0, canvas_w - crop_w)
 
     for _ in range(max_attempts):
         y = rng.randint(0, max_y)

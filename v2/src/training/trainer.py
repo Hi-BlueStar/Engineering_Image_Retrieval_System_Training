@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from src.dataset.gpu_transforms import GPUAugmentation
 from src.model.loss import calculate_collapse_std, simsiam_loss
 from src.training.checkpoint import CheckpointManager
 from src.training.timer import PrecisionTimer
@@ -64,6 +65,7 @@ class Trainer:
         device: str = "cuda",
         loss_fn: Optional[Callable] = None,
         grad_clip: float = 0.0,
+        gpu_aug: Optional[GPUAugmentation] = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -73,6 +75,7 @@ class Trainer:
         self.device = device
         self.loss_fn = loss_fn or simsiam_loss
         self.grad_clip = grad_clip
+        self.gpu_aug = gpu_aug  # None → DataLoader 已提供 (v1, v2)
 
     def fit(
         self,
@@ -202,9 +205,16 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for v1, v2 in loader:
-            v1 = v1.to(self.device, non_blocking=True)
-            v2 = v2.to(self.device, non_blocking=True)
+        for batch in loader:
+            if self.gpu_aug is not None:
+                # GPU 增強模式：batch = raw tensor [B, C, H, W]
+                raw = batch.to(self.device, non_blocking=True)
+                v1, v2 = self.gpu_aug.create_views(raw)
+            else:
+                # CPU 增強模式：batch = (view1, view2)
+                v1, v2 = batch
+                v1 = v1.to(self.device, non_blocking=True)
+                v2 = v2.to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -273,9 +283,14 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for v1, v2 in loader:
-            v1 = v1.to(self.device, non_blocking=True)
-            v2 = v2.to(self.device, non_blocking=True)
+        for batch in loader:
+            if self.gpu_aug is not None:
+                raw = batch.to(self.device, non_blocking=True)
+                v1, v2 = self.gpu_aug.create_views(raw)
+            else:
+                v1, v2 = batch
+                v1 = v1.to(self.device, non_blocking=True)
+                v2 = v2.to(self.device, non_blocking=True)
 
             with amp_ctx:
                 p1, p2, z1, z2 = self.model(v1, v2)

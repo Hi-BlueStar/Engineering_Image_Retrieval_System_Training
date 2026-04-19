@@ -1,0 +1,27 @@
+# ==============================================================================
+# SimSiam v2 — 依賴清單
+# ==============================================================================
+
+# --- Core ---
+torch>=2.0.0
+torchvision>=0.15.0
+
+# --- Configuration ---
+omegaconf>=2.3.0
+
+# --- Data Processing ---
+PyMuPDF>=1.23.0       # fitz - PDF rendering
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+pandas>=2.0.0
+
+# --- Visualization ---
+plotly>=5.15.0
+
+# --- Logging & UI ---
+rich>=13.0.0
+
+# --- System Monitoring (optional) ---
+psutil>=5.9.0
+# pynvml>=11.5.0      # Optional: GPU monitoring for preprocessing

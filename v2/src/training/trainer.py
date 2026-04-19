@@ -1,0 +1,281 @@
+"""Trainer 核心訓練迴圈模組 (Trainer Module)。
+
+============================================================
+封裝完整的 epoch 訓練迴圈，包含：
+
+- 訓練 (``_train_one_epoch``)
+- 驗證 (``_evaluate``)
+- 混合精度 (AMP) 自動管理
+- Checkpoint 儲存（委派給 ``CheckpointManager``）
+- 實驗指標記錄（委派給 ``ExperimentTracker``）
+
+設計原則：
+    - **依賴注入**：Trainer 不建立模型、優化器或資料載入器，
+      所有依賴均由外部注入。
+    - **模型無關**：只要符合 ``nn.Module`` 介面（接受 ``x1, x2``
+      輸入、回傳 ``p1, p2, z1, z2``），即可無縫替換模型。
+    - **損失函數無關**：損失函數從外部傳入。
+
+效能設計：
+    - ``torch.amp.autocast`` (FP16)：train 和 evaluate 均啟用。
+    - ``optimizer.zero_grad(set_to_none=True)``：減少記憶體寫入。
+    - ``non_blocking=True``：張量搬移不阻塞 CPU。
+============================================================
+"""
+
+from __future__ import annotations
+
+import contextlib
+import time
+from typing import Any, Callable, Optional, Tuple
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+from src.model.loss import calculate_collapse_std, simsiam_loss
+from src.training.checkpoint import CheckpointManager
+from src.training.timer import PrecisionTimer
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class Trainer:
+    """核心訓練迴圈引擎。
+
+    Args:
+        model: SimSiam 模型（或任何符合雙視角介面的模型）。
+        optimizer: 優化器。
+        scheduler: 學習率排程器。
+        scaler: ``torch.amp.GradScaler``。
+        checkpoint_mgr: Checkpoint 管理器。
+        device: 訓練裝置（``"cuda"`` 或 ``"cpu"``）。
+        loss_fn: 損失函數，預設為 ``simsiam_loss``。
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scaler: torch.amp.GradScaler,
+        checkpoint_mgr: CheckpointManager,
+        device: str = "cuda",
+        loss_fn: Optional[Callable] = None,
+    ) -> None:
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.scaler = scaler
+        self.checkpoint_mgr = checkpoint_mgr
+        self.device = device
+        self.loss_fn = loss_fn or simsiam_loss
+
+    def fit(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        epochs: int,
+        *,
+        epoch_callback: Optional[Callable[[dict], None]] = None,
+    ) -> dict[str, Any]:
+        """執行完整的多 epoch 訓練迴圈。
+
+        Args:
+            train_loader: 訓練 DataLoader。
+            val_loader: 驗證 DataLoader。
+            epochs: 訓練 epoch 數。
+            epoch_callback: 每 epoch 結束後的可選回呼函式，
+                接受一個包含該 epoch 指標的字典。
+
+        Returns:
+            dict: 訓練結果摘要，包含 ``best_val_loss`` 等。
+        """
+        best_val_loss = float("inf")
+        use_amp = self.scaler.is_enabled() and str(self.device).startswith("cuda")
+
+        logger.info(
+            "開始訓練: epochs=%d, AMP=%s, device=%s",
+            epochs,
+            use_amp,
+            self.device,
+        )
+
+        for epoch in range(1, epochs + 1):
+            epoch_timer = PrecisionTimer(f"epoch_{epoch}")
+            epoch_timer.start()
+            wall_start = time.perf_counter()
+
+            # --- Train ---
+            train_loss, train_std = self._train_one_epoch(
+                train_loader, use_amp
+            )
+
+            # --- Evaluate ---
+            val_loss, val_std = (
+                self._evaluate(val_loader, use_amp)
+                if len(val_loader) > 0
+                else (0.0, 0.0)
+            )
+
+            # --- Checkpoint (暫停計時) ---
+            epoch_timer.pause()
+
+            is_best = val_loss < best_val_loss
+            if is_best:
+                best_val_loss = val_loss
+
+            self.checkpoint_mgr.save(
+                self.model, self.optimizer, epoch, val_loss, is_best
+            )
+
+            epoch_timer.resume()
+
+            # --- Scheduler ---
+            self.scheduler.step()
+
+            # --- 停止 epoch 計時 ---
+            epoch_net = epoch_timer.stop()
+            epoch_wall = time.perf_counter() - wall_start
+
+            # --- 指標收集 ---
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            metrics = {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "train_z_std": train_std,
+                "val_z_std": val_std,
+                "lr": current_lr,
+                "epoch_net_sec": epoch_net,
+                "epoch_wall_sec": epoch_wall,
+                "is_best": is_best,
+            }
+
+            if epoch_callback:
+                epoch_callback(metrics)
+
+            # --- 週期性日誌 ---
+            if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
+                logger.info(
+                    "Epoch %d/%d — train_loss=%.4f, val_loss=%.4f, "
+                    "std=%.4f, lr=%.2e, net=%.1fs",
+                    epoch,
+                    epochs,
+                    train_loss,
+                    val_loss,
+                    train_std,
+                    current_lr,
+                    epoch_net,
+                )
+
+        logger.info("訓練完成: best_val_loss=%.4f", best_val_loss)
+        return {"best_val_loss": best_val_loss}
+
+    def _train_one_epoch(
+        self,
+        loader: DataLoader,
+        use_amp: bool,
+    ) -> Tuple[float, float]:
+        """執行單個 epoch 的訓練。
+
+        Args:
+            loader: 訓練 DataLoader。
+            use_amp: 是否啟用混合精度。
+
+        Returns:
+            Tuple[float, float]: ``(avg_loss, avg_std)``。
+        """
+        self.model.train()
+        total_loss = 0.0
+        total_std = 0.0
+        num_batches = 0
+
+        amp_ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+            if use_amp
+            else contextlib.nullcontext()
+        )
+
+        for v1, v2 in loader:
+            v1 = v1.to(self.device, non_blocking=True)
+            v2 = v2.to(self.device, non_blocking=True)
+
+            self.optimizer.zero_grad(set_to_none=True)
+
+            with amp_ctx:
+                p1, p2, z1, z2 = self.model(v1, v2)
+                loss = self.loss_fn(p1, p2, z1, z2)
+
+            if use_amp:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
+
+            total_loss += loss.item()
+
+            with torch.no_grad():
+                batch_std = (
+                    calculate_collapse_std(z1) + calculate_collapse_std(z2)
+                ) / 2.0
+                total_std += batch_std
+
+            num_batches += 1
+
+        return (
+            total_loss / max(num_batches, 1),
+            total_std / max(num_batches, 1),
+        )
+
+    @torch.no_grad()
+    def _evaluate(
+        self,
+        loader: DataLoader,
+        use_amp: bool,
+    ) -> Tuple[float, float]:
+        """驗證模型損失與標準差。
+
+        注意：此處的 loss 為 SSL 收斂指標，
+        而非下游分類準確率。
+
+        Args:
+            loader: 驗證 DataLoader。
+            use_amp: 是否啟用混合精度。
+
+        Returns:
+            Tuple[float, float]: ``(avg_loss, avg_std)``。
+        """
+        self.model.eval()
+        total_loss = 0.0
+        total_std = 0.0
+        num_batches = 0
+
+        amp_ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+            if use_amp
+            else contextlib.nullcontext()
+        )
+
+        for v1, v2 in loader:
+            v1 = v1.to(self.device, non_blocking=True)
+            v2 = v2.to(self.device, non_blocking=True)
+
+            with amp_ctx:
+                p1, p2, z1, z2 = self.model(v1, v2)
+                loss = self.loss_fn(p1, p2, z1, z2)
+
+            total_loss += loss.item()
+            batch_std = (
+                calculate_collapse_std(z1) + calculate_collapse_std(z2)
+            ) / 2.0
+            total_std += batch_std
+            num_batches += 1
+
+        return (
+            total_loss / max(num_batches, 1),
+            total_std / max(num_batches, 1),
+        )

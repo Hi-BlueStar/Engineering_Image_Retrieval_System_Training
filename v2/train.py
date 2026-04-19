@@ -38,6 +38,38 @@ from src.training.trainer import Trainer
 logger = get_logger(__name__)
 
 
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    t: "TrainingConfig",  # noqa: F821
+) -> torch.optim.lr_scheduler.LRScheduler:
+    """依設定建立學習率排程器。
+
+    Args:
+        optimizer: 優化器。
+        t: TrainingConfig，讀取 ``scheduler`` 與 ``epochs``。
+
+    Returns:
+        LRScheduler 實例。
+
+    Raises:
+        ValueError: 當 ``scheduler`` 值不被支援時。
+    """
+    name = t.scheduler.lower()
+    if name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=t.epochs
+        )
+    if name == "step":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=max(1, t.epochs // 3), gamma=0.1
+        )
+    if name == "constant":
+        return torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+    raise ValueError(
+        f"不支援的 scheduler: '{t.scheduler}'。可用: cosine, step, constant"
+    )
+
+
 def _run_single_training(
     cfg: AppConfig,
     run_idx: int,
@@ -78,7 +110,7 @@ def _run_single_training(
         val_path = Path(d.dataset_dir) / run_dir_name / d.val_subpath
 
         train_loader, val_loader, n_train, n_val = create_dataloaders(
-            train_path, val_path, t, in_channels=m.in_channels
+            train_path, val_path, t, in_channels=m.in_channels, seed=seed
         )
 
         # --- Model (每 Run 重新初始化) ---
@@ -86,6 +118,7 @@ def _run_single_training(
         model = SimSiam(
             backbone=m.backbone,
             proj_dim=m.proj_dim,
+            proj_hidden=m.proj_hidden,
             pred_hidden=m.pred_hidden,
             pretrained=m.pretrained,
             in_channels=m.in_channels,
@@ -95,10 +128,8 @@ def _run_single_training(
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=t.lr, weight_decay=t.weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=t.epochs
-        )
-        scaler = torch.amp.GradScaler(enabled=(device == "cuda"))
+        scheduler = _build_scheduler(optimizer, t)
+        scaler = torch.amp.GradScaler(enabled=(device == "cuda" and t.use_amp))
 
         # --- Checkpoint Manager ---
         run_tracker = tracker.create_run(run_name)
@@ -116,6 +147,7 @@ def _run_single_training(
             scaler=scaler,
             checkpoint_mgr=ckpt_mgr,
             device=device,
+            grad_clip=t.grad_clip,
         )
 
         # --- 訓練 ---
@@ -123,7 +155,7 @@ def _run_single_training(
             train_loader=train_loader,
             val_loader=val_loader,
             epochs=t.epochs,
-            epoch_callback=lambda m: run_tracker.log_epoch(m),
+            epoch_callback=lambda metrics: run_tracker.log_epoch(metrics),
         )
 
         # --- 報表 ---
@@ -182,11 +214,13 @@ def main() -> None:
 
     # --- 日誌 ---
     setup_logging(
-        level="INFO",
-        log_file=str(
-            Path(cfg.experiment.output_dir) / cfg.experiment.log_file
+        level=cfg.logging.level,
+        log_file=(
+            str(Path(cfg.experiment.output_dir) / cfg.experiment.log_file)
+            if cfg.logging.log_to_file
+            else None
         ),
-        use_rich=True,
+        use_rich=cfg.logging.use_rich,
     )
 
     # --- 計時器 ---

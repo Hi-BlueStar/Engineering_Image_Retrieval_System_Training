@@ -241,15 +241,20 @@ class RunTracker:
         self._logs: List[Dict[str, Any]] = []
 
     def log_epoch(self, metrics: Dict[str, Any]) -> None:
-        """記錄單個 epoch 的指標並即時持久化至 CSV。
+        """記錄單個 epoch 的指標並即時持久化至 CSV（append 模式）。
 
         Args:
             metrics: 包含 ``epoch``、``train_loss``、``val_loss``
                 等鍵的指標字典。
         """
         self._logs.append(metrics)
-        df = pd.DataFrame(self._logs)
-        df.to_csv(self.run_dir / "training_log.csv", index=False)
+        write_header = len(self._logs) == 1
+        pd.DataFrame([metrics]).to_csv(
+            self.run_dir / "training_log.csv",
+            mode="a",
+            header=write_header,
+            index=False,
+        )
 
     def get_logs_dataframe(self) -> pd.DataFrame:
         """取得所有 epoch 日誌的 DataFrame。

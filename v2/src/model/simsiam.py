@@ -90,6 +90,7 @@ class SimSiam(nn.Module):
         self,
         backbone: str = "resnet18",
         proj_dim: int = 2048,
+        proj_hidden: int | None = None,
         pred_hidden: int = 512,
         dropout: float = 0.0,
         pretrained: bool = False,
@@ -102,9 +103,10 @@ class SimSiam(nn.Module):
             name=backbone, pretrained=pretrained, in_channels=in_channels
         )
 
-        # 2. Projector
+        # 2. Projector（proj_hidden=None 時自動使用 backbone feat_dim）
+        effective_hidden = proj_hidden if proj_hidden is not None else feat_dim
         self.projector = _mlp(
-            feat_dim, 2048, proj_dim, bn_last=True, dropout=dropout
+            feat_dim, effective_hidden, proj_dim, bn_last=True, dropout=dropout
         )
 
         # 3. Predictor

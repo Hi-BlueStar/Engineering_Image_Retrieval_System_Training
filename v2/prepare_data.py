@@ -60,11 +60,13 @@ def main() -> None:
 
     # --- 初始化日誌 ---
     setup_logging(
-        level="INFO",
-        log_file=str(
-            Path(cfg.experiment.output_dir) / "prepare_data.log"
+        level=cfg.logging.level,
+        log_file=(
+            str(Path(cfg.experiment.output_dir) / "prepare_data.log")
+            if cfg.logging.log_to_file
+            else None
         ),
-        use_rich=True,
+        use_rich=cfg.logging.use_rich,
     )
 
     timers = TimerCollection()

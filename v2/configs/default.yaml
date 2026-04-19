@@ -52,6 +52,7 @@ model:
   pretrained: true # 是否載入 ImageNet 預訓練權重
   in_channels: 1 # 輸入通道數: 1=灰階, 3=RGB
   proj_dim: 2048 # Projector 輸出維度
+  proj_hidden: null # Projector 隱藏層維度 (null=自動使用 backbone feat_dim)
   pred_hidden: 512 # Predictor 隱藏層維度
 
 # ------------------------------------------------------------------------------
@@ -71,6 +72,9 @@ training:
     - ".bmp"
     - ".tif"
     - ".webp"
+  use_amp: true # 是否啟用混合精度 (FP16)，僅 CUDA 有效
+  scheduler: "cosine" # 學習率排程器: cosine / step / constant
+  grad_clip: 1.0 # 梯度裁切閾值 (0.0 = 停用)
 
 # ------------------------------------------------------------------------------
 # 實驗追蹤設定 (Experiment Tracking)

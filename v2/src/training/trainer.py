@@ -63,6 +63,7 @@ class Trainer:
         checkpoint_mgr: CheckpointManager,
         device: str = "cuda",
         loss_fn: Optional[Callable] = None,
+        grad_clip: float = 0.0,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -71,6 +72,7 @@ class Trainer:
         self.checkpoint_mgr = checkpoint_mgr
         self.device = device
         self.loss_fn = loss_fn or simsiam_loss
+        self.grad_clip = grad_clip
 
     def fit(
         self,
@@ -94,12 +96,14 @@ class Trainer:
         """
         best_val_loss = float("inf")
         use_amp = self.scaler.is_enabled() and str(self.device).startswith("cuda")
+        has_val = len(val_loader) > 0
 
         logger.info(
-            "開始訓練: epochs=%d, AMP=%s, device=%s",
+            "開始訓練: epochs=%d, AMP=%s, device=%s, has_val=%s",
             epochs,
             use_amp,
             self.device,
+            has_val,
         )
 
         for epoch in range(1, epochs + 1):
@@ -113,11 +117,11 @@ class Trainer:
             )
 
             # --- Evaluate ---
-            val_loss, val_std = (
-                self._evaluate(val_loader, use_amp)
-                if len(val_loader) > 0
-                else (0.0, 0.0)
-            )
+            if has_val:
+                val_loss, val_std = self._evaluate(val_loader, use_amp)
+            else:
+                # 無驗證集時以訓練損失作為監控指標
+                val_loss, val_std = train_loss, train_std
 
             # --- Checkpoint (暫停計時) ---
             epoch_timer.pause()
@@ -210,10 +214,19 @@ class Trainer:
 
             if use_amp:
                 self.scaler.scale(loss).backward()
+                if self.grad_clip > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip
+                    )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
+                if self.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip
+                    )
                 self.optimizer.step()
 
             total_loss += loss.item()

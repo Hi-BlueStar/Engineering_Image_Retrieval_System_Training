@@ -151,10 +151,17 @@ def _adapt_input_channels(
         bias=old_conv.bias is not None,
     )
 
-    if pretrained and in_channels == 1:
+    if pretrained and in_channels != 3:
         with torch.no_grad():
-            # [out_ch, 3, kH, kW] → [out_ch, 1, kH, kW]
-            new_conv.weight[:] = old_conv.weight.sum(dim=1, keepdim=True) / 3.0
+            # 平均 RGB 三通道 → [out_ch, 1, kH, kW]
+            avg = old_conv.weight.mean(dim=1, keepdim=True)
+            # 每個 in_channels 分配等比例權重，保持激活值量級一致
+            new_conv.weight.copy_(avg.expand(-1, in_channels, -1, -1) / in_channels)
+    elif not pretrained and in_channels != 3:
+        logger.warning(
+            "in_channels=%d 且 pretrained=False，conv1 以隨機權重初始化",
+            in_channels,
+        )
 
     backbone.conv1 = new_conv  # type: ignore[attr-defined]
     logger.debug(

@@ -101,6 +101,7 @@ class ModelConfig:
         pretrained: 是否載入 ImageNet 預訓練權重。
         in_channels: 輸入影像通道數。
         proj_dim: Projector 輸出維度。
+        proj_hidden: Projector 隱藏層維度；``None`` 自動使用 backbone feat_dim。
         pred_hidden: Predictor 隱藏層維度。
     """
 
@@ -108,6 +109,7 @@ class ModelConfig:
     pretrained: bool = True
     in_channels: int = 1
     proj_dim: int = 2048
+    proj_hidden: Optional[int] = None
     pred_hidden: int = 512
 
 
@@ -124,6 +126,9 @@ class TrainingConfig:
         num_workers: DataLoader 工作程序數。
         prefetch_factor: DataLoader 預取因子。
         img_exts: 支援的影像格式列表。
+        use_amp: 是否啟用混合精度 (FP16)。
+        scheduler: 學習率排程器類型 (``cosine`` / ``step`` / ``constant``)。
+        grad_clip: 梯度裁切閾值；``0.0`` 停用。
     """
 
     img_size: int = 512
@@ -136,6 +141,9 @@ class TrainingConfig:
     img_exts: List[str] = field(
         default_factory=lambda: [".jpg", ".png", ".bmp", ".tif", ".webp"]
     )
+    use_amp: bool = True
+    scheduler: str = "cosine"
+    grad_clip: float = 1.0
 
 
 @dataclass

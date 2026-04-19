@@ -27,6 +27,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import AppConfig
 from src.dataset.dataloader import create_dataloaders
+from src.dataset.gpu_transforms import GPUAugmentation
+from src.dataset.labeled_dataset import LabeledImageDataset
+from src.evaluation.evaluator import evaluate_model, save_metrics
 from src.experiment.reporter import generate_run_reports
 from src.experiment.tracker import ExperimentTracker
 from src.logger import get_logger, setup_logging
@@ -107,10 +110,14 @@ def _run_single_training(
         # --- DataLoader ---
         run_dir_name = f"Run_{run_idx + 1:02d}_Seed_{seed}"
         train_path = Path(d.dataset_dir) / run_dir_name / d.train_subpath
-        val_path = Path(d.dataset_dir) / run_dir_name / d.val_subpath
+        val_path = Path(d.dataset_dir) / run_dir_name / d.test_subpath
 
+        use_gpu_aug = t.use_gpu_augmentation and device == "cuda"
         train_loader, val_loader, n_train, n_val = create_dataloaders(
-            train_path, val_path, t, in_channels=m.in_channels, seed=seed
+            train_path, val_path, t,
+            in_channels=m.in_channels,
+            seed=seed,
+            use_gpu_augmentation=use_gpu_aug,
         )
 
         # --- Model (每 Run 重新初始化) ---
@@ -123,6 +130,15 @@ def _run_single_training(
             pretrained=m.pretrained,
             in_channels=m.in_channels,
         ).to(device)
+
+        # --- GPU Augmentation ---
+        gpu_aug = None
+        if use_gpu_aug:
+            gpu_aug = GPUAugmentation(
+                img_size=t.img_size,
+                use_augmentation=t.use_augmentation,
+                in_channels=m.in_channels,
+            ).to(device)
 
         # --- Optimizer & Scheduler ---
         optimizer = torch.optim.AdamW(
@@ -148,6 +164,7 @@ def _run_single_training(
             checkpoint_mgr=ckpt_mgr,
             device=device,
             grad_clip=t.grad_clip,
+            gpu_aug=gpu_aug,
         )
 
         # --- 訓練 ---
@@ -162,6 +179,30 @@ def _run_single_training(
         df = run_tracker.get_logs_dataframe()
         generate_run_reports(df, run_tracker.run_dir, run_name)
 
+        # --- 評估 ---
+        eval_metrics = {}
+        labeled_path = Path(d.labeled_data_path)
+        if labeled_path.exists():
+            try:
+                labeled_ds = LabeledImageDataset(
+                    root=labeled_path,
+                    img_size=t.img_size,
+                    in_channels=m.in_channels,
+                )
+                eval_metrics = evaluate_model(
+                    model=model,
+                    labeled_dataset=labeled_ds,
+                    device=device,
+                    top_k_values=d.eval_top_k_values,
+                )
+                save_metrics(
+                    eval_metrics,
+                    run_tracker.run_dir / "retrieval_metrics.json",
+                    extra_info={"run_name": run_name},
+                )
+            except Exception as eval_err:
+                logger.warning("評估失敗: %s", eval_err)
+
         run_timer.stop()
 
         return {
@@ -172,6 +213,7 @@ def _run_single_training(
             "n_val": n_val,
             "status": "success",
             "log_dir": str(run_tracker.run_dir),
+            **eval_metrics,
         }
 
     except Exception as e:

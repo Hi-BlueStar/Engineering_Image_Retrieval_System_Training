@@ -25,7 +25,7 @@ from __future__ import annotations
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -86,10 +86,23 @@ class DataConfig:
     skip_preprocessing: bool = False
     dataset_dir: str = "dataset"
     split_ratio: float = 0.8
-    n_runs: int = 5
+    n_runs: int = 1
     base_seed: int = 42
     train_subpath: str = "Component_Dataset/train"
     val_subpath: str = "Component_Dataset/val"
+    test_subpath: str = "Component_Dataset/test"
+
+    # --- 消融實驗：前處理旗標 ---
+    use_connected_components: bool = True
+    use_topology_analysis: bool = True
+    remove_gifu_logo: bool = True
+    logo_template_path: Optional[str] = None
+    logo_mask_region: Optional[List[float]] = None  # [x1_r, y1_r, x2_r, y2_r]
+
+    # --- 評估設定 ---
+    labeled_data_path: str = "data/converted_images"
+    test_split_ratio: float = 0.2
+    eval_top_k_values: List[int] = field(default_factory=lambda: [1, 5, 10])
 
 
 @dataclass
@@ -144,6 +157,8 @@ class TrainingConfig:
     use_amp: bool = True
     scheduler: str = "cosine"
     grad_clip: float = 1.0
+    use_augmentation: bool = True
+    use_gpu_augmentation: bool = True
 
 
 @dataclass

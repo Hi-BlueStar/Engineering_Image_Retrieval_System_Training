@@ -1,12 +1,13 @@
 # ==============================================================================
-# SimSiam 工程圖訓練管線 — 預設設定檔
+# SimSiam 工程圖訓練管線 — 預設設定檔（全功能啟用）
 # ==============================================================================
 # 使用方式:
 #   python v2/prepare_data.py --config v2/configs/default.yaml
 #   python v2/train.py --config v2/configs/default.yaml
+#   python v2/ablation_train.py
 #
 # CLI 覆寫範例:
-#   python v2/train.py --config v2/configs/default.yaml training.lr=3e-4 training.epochs=100
+#   python v2/train.py --config v2/configs/default.yaml training.lr=3e-4
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -14,81 +15,94 @@
 # ------------------------------------------------------------------------------
 data:
   # --- 壓縮檔設定 ---
-  raw_zip_path: "data/PDF.zip" # 原始壓縮檔路徑 (.zip / .rar)，null 表示不解壓
-  skip_extraction: false # true 則強制跳過解壓縮步驟
+  raw_zip_path: null                       # 原始壓縮檔路徑，null 表示不解壓
+  skip_extraction: false
 
   # --- PDF 轉換 ---
-  raw_pdf_dir: "data/raw_pdfs" # PDF 來源目錄
-  converted_image_dir: "data/converted_images" # PDF→Image 輸出目錄
-  pdf_dpi: 100 # 轉換解析度
-  pdf_max_workers: 16 # PDF 轉換並行數
+  raw_pdf_dir: "data/raw_pdfs"             # 類別子目錄結構: data/raw_pdfs/<class>/
+  converted_image_dir: "data/converted_images"
+  pdf_dpi: 100
+  pdf_max_workers: 16
   skip_pdf_conversion: false
 
   # --- 影像前處理 ---
   preprocessed_image_dir: "data/preprocessed_images"
-  preprocess_top_n: 5 # 保留的大元件數
-  preprocess_remove_largest: true # 移除最大元件 (通常為圖框)
-  preprocess_padding: 2 # 元件裁切邊界填充 (px)
-  preprocess_max_attempts: 400 # 隨機排列最大嘗試次數
-  preprocess_random_count: 10 # 每張影像產生的隨機排列變體數
-  preprocess_max_workers: 12 # 前處理並行程序數
+  preprocess_top_n: 5
+  preprocess_remove_largest: true
+  preprocess_padding: 2
+  preprocess_max_attempts: 400
+  preprocess_random_count: 10
+  preprocess_max_workers: 12
   skip_preprocessing: false
 
-  # --- 資料集分割 ---
-  dataset_dir: "dataset" # 分割後資料集根目錄
-  split_ratio: 0.8 # 訓練集比例
-  n_runs: 5 # 多 Run 重複次數
-  base_seed: 42 # 基礎隨機種子
+  # --- 消融實驗前處理旗標 ---
+  use_connected_components: true           # 連通元件分析 + 隨機排列
+  use_topology_analysis: true             # 拓撲感知元件排序（孔洞數）
+  remove_gifu_logo: true                  # 移除 Gifu Logo
+  logo_template_path: null               # Logo 模板路徑（null=自動偵測角落）
+  logo_mask_region: null                 # [x1_r, y1_r, x2_r, y2_r]（可選）
 
-  # --- 資料集子路徑結構 ---
+  # --- 資料集分割 ---
+  dataset_dir: "dataset"
+  split_ratio: 0.8                        # 訓練集比例（測試集 = 1 - split_ratio）
+  test_split_ratio: 0.2
+  n_runs: 1
+  base_seed: 42
   train_subpath: "Component_Dataset/train"
-  val_subpath: "Component_Dataset/val"
+  val_subpath: "Component_Dataset/train"  # val = train 子集（SimSiam 無監督）
+  test_subpath: "Component_Dataset/test"  # 評估用測試集
+
+  # --- 評估設定 ---
+  labeled_data_path: "data/converted_images"   # 含類別子目錄的評估資料集
+  eval_top_k_values: [1, 5, 10]
 
 # ------------------------------------------------------------------------------
 # 模型設定 (Model Architecture)
 # ------------------------------------------------------------------------------
 model:
-  backbone: "resnet18" # 骨幹網路: resnet18 / resnet50
-  pretrained: true # 是否載入 ImageNet 預訓練權重
-  in_channels: 1 # 輸入通道數: 1=灰階, 3=RGB
-  proj_dim: 2048 # Projector 輸出維度
-  proj_hidden: null # Projector 隱藏層維度 (null=自動使用 backbone feat_dim)
-  pred_hidden: 512 # Predictor 隱藏層維度
+  backbone: "resnet18"
+  pretrained: true
+  in_channels: 1
+  proj_dim: 2048
+  proj_hidden: null
+  pred_hidden: 512
 
 # ------------------------------------------------------------------------------
 # 訓練設定 (Training Hyperparameters)
 # ------------------------------------------------------------------------------
 training:
-  img_size: 512 # 輸入影像尺寸 (正方形)
-  epochs: 200 # 每 Run 訓練 epoch 數
-  batch_size: 64 # Batch 大小
-  lr: 2.0e-5 # 學習率
-  weight_decay: 1.0e-5 # AdamW 權重衰減
-  num_workers: 8 # DataLoader 工作程序數
-  prefetch_factor: 2 # DataLoader 預取因子
-  img_exts: # 支援的影像格式
+  img_size: 512
+  epochs: 200
+  batch_size: 64
+  lr: 2.0e-5
+  weight_decay: 1.0e-5
+  num_workers: 4                           # GPU aug 模式下 workers 數可減少
+  prefetch_factor: 2
+  img_exts:
     - ".jpg"
     - ".png"
     - ".bmp"
     - ".tif"
     - ".webp"
-  use_amp: true # 是否啟用混合精度 (FP16)，僅 CUDA 有效
-  scheduler: "cosine" # 學習率排程器: cosine / step / constant
-  grad_clip: 1.0 # 梯度裁切閾值 (0.0 = 停用)
+  use_amp: true
+  scheduler: "cosine"
+  grad_clip: 1.0
+  use_augmentation: true                  # 完整工程圖增強（旋轉、ColorJitter 等）
+  use_gpu_augmentation: true             # 在 GPU 上做增強（解決 CPU 瓶頸）
 
 # ------------------------------------------------------------------------------
 # 實驗追蹤設定 (Experiment Tracking)
 # ------------------------------------------------------------------------------
 experiment:
-  output_dir: "outputs" # 實驗結果輸出根目錄
-  exp_name: "simsiam_exp" # 實驗名稱前綴
-  save_freq: 10 # Checkpoint 儲存頻率 (epochs)
-  log_file: "training.log" # 日誌檔名
+  output_dir: "outputs"
+  exp_name: "simsiam_exp"
+  save_freq: 10
+  log_file: "training.log"
 
 # ------------------------------------------------------------------------------
 # 日誌設定 (Logging)
 # ------------------------------------------------------------------------------
 logging:
-  level: "INFO" # 日誌等級: DEBUG / INFO / WARNING / ERROR
-  log_to_file: true # 是否輸出至檔案
-  use_rich: true # 是否使用 Rich Handler 美化 Console 輸出
+  level: "INFO"
+  log_to_file: true
+  use_rich: true

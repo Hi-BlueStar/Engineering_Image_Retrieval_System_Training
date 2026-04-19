@@ -36,18 +36,27 @@ class EngineeringDrawingAugmentation:
         img_size: int = 512,
         mean: Tuple[float, ...] = (0.5,),
         std: Tuple[float, ...] = (0.5,),
+        use_augmentation: bool = True,
     ) -> None:
-        self._transform = T.Compose([
-            T.RandomResizedCrop(img_size, scale=(0.2, 1.0), ratio=(0.75, 1.333)),
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomVerticalFlip(p=0.5),
-            T.RandomApply([T.RandomRotation(degrees=30)], p=0.5),
-            T.RandomApply(
-                [T.ColorJitter(brightness=0.4, contrast=0.4)], p=0.8
-            ),
-            T.ToTensor(),
-            T.Normalize(mean=mean, std=std),
-        ])
+        if use_augmentation:
+            self._transform = T.Compose([
+                T.RandomResizedCrop(img_size, scale=(0.2, 1.0), ratio=(0.75, 1.333)),
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomVerticalFlip(p=0.5),
+                T.RandomApply([T.RandomRotation(degrees=30)], p=0.5),
+                T.RandomApply(
+                    [T.ColorJitter(brightness=0.4, contrast=0.4)], p=0.8
+                ),
+                T.ToTensor(),
+                T.Normalize(mean=mean, std=std),
+            ])
+        else:
+            # 消融實驗：無增強版（僅 resize + normalize）
+            self._transform = T.Compose([
+                T.Resize((img_size, img_size)),
+                T.ToTensor(),
+                T.Normalize(mean=mean, std=std),
+            ])
 
     def __call__(
         self, img: Image.Image

@@ -101,18 +101,15 @@ v2/
 ### 2.2 安裝步驟
 
 ```bash
-# 1. 進入 v2 目錄
-cd v2/
-
-# 2. 建立虛擬環境（建議使用 uv）
+# 1. 在專案根目錄建立虛擬環境（建議使用 uv）
 uv venv .venv --python 3.11
 source .venv/bin/activate
 
-# 3. 安裝依賴
-uv pip install -r requirements.txt
+# 2. 安裝依賴
+uv pip install -r v2/requirements.txt
 
 # 或使用 pip：
-# pip install -r requirements.txt
+# pip install -r v2/requirements.txt
 ```
 
 ### 2.3 額外依賴
@@ -144,20 +141,20 @@ training:
 
 ```bash
 # 完整流程：解壓 → PDF轉圖 → 前處理 → 分割
-uv run python prepare_data.py --config configs/default.yaml
+uv run python v2/prepare_data.py --config v2/configs/default.yaml
 
 # 跳過已完成的步驟（自動偵測 + CLI 覆寫）
-uv run python prepare_data.py --config configs/default.yaml data.skip_extraction=true
+uv run python v2/prepare_data.py --config v2/configs/default.yaml data.skip_extraction=true
 ```
 
 ### 3.3 執行訓練
 
 ```bash
 # 基本訓練
-uv run python train.py --config configs/default.yaml
+uv run python v2/train.py --config v2/configs/default.yaml
 
 # 覆寫超參數
-uv run python train.py --config configs/default.yaml \
+uv run python v2/train.py --config v2/configs/default.yaml \
     training.lr=3e-4 \
     training.epochs=100 \
     training.batch_size=32
@@ -382,12 +379,12 @@ start_epoch = state["epoch"]
 
 ```bash
 # 只做 PDF 轉換（跳過解壓和前處理）
-python prepare_data.py --config configs/default.yaml \
+python v2/prepare_data.py --config v2/configs/default.yaml \
     data.skip_extraction=true \
     data.skip_preprocessing=true
 
 # 只做資料集分割（跳過所有前處理）
-python prepare_data.py --config configs/default.yaml \
+python v2/prepare_data.py --config v2/configs/default.yaml \
     data.skip_extraction=true \
     data.skip_pdf_conversion=true \
     data.skip_preprocessing=true

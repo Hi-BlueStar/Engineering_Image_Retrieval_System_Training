@@ -2,11 +2,11 @@
 # SimSiam 工程圖訓練管線 — 預設設定檔
 # ==============================================================================
 # 使用方式:
-#   python prepare_data.py --config configs/default.yaml
-#   python train.py --config configs/default.yaml
+#   python v2/prepare_data.py --config v2/configs/default.yaml
+#   python v2/train.py --config v2/configs/default.yaml
 #
 # CLI 覆寫範例:
-#   python train.py --config configs/default.yaml training.lr=3e-4 training.epochs=100
+#   python v2/train.py --config v2/configs/default.yaml training.lr=3e-4 training.epochs=100
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -14,31 +14,31 @@
 # ------------------------------------------------------------------------------
 data:
   # --- 壓縮檔設定 ---
-  raw_zip_path: null                          # 原始壓縮檔路徑 (.zip / .rar)，null 表示不解壓
-  skip_extraction: false                      # true 則強制跳過解壓縮步驟
+  raw_zip_path: "data/PDF.zip" # 原始壓縮檔路徑 (.zip / .rar)，null 表示不解壓
+  skip_extraction: false # true 則強制跳過解壓縮步驟
 
   # --- PDF 轉換 ---
-  raw_pdf_dir: "data/raw_pdfs"                # PDF 來源目錄
+  raw_pdf_dir: "data/raw_pdfs" # PDF 來源目錄
   converted_image_dir: "data/converted_images" # PDF→Image 輸出目錄
-  pdf_dpi: 100                                # 轉換解析度
-  pdf_max_workers: 16                         # PDF 轉換並行數
+  pdf_dpi: 100 # 轉換解析度
+  pdf_max_workers: 16 # PDF 轉換並行數
   skip_pdf_conversion: false
 
   # --- 影像前處理 ---
   preprocessed_image_dir: "data/preprocessed_images"
-  preprocess_top_n: 5                         # 保留的大元件數
-  preprocess_remove_largest: true             # 移除最大元件 (通常為圖框)
-  preprocess_padding: 2                       # 元件裁切邊界填充 (px)
-  preprocess_max_attempts: 400                # 隨機排列最大嘗試次數
-  preprocess_random_count: 10                 # 每張影像產生的隨機排列變體數
-  preprocess_max_workers: 12                  # 前處理並行程序數
+  preprocess_top_n: 5 # 保留的大元件數
+  preprocess_remove_largest: true # 移除最大元件 (通常為圖框)
+  preprocess_padding: 2 # 元件裁切邊界填充 (px)
+  preprocess_max_attempts: 400 # 隨機排列最大嘗試次數
+  preprocess_random_count: 10 # 每張影像產生的隨機排列變體數
+  preprocess_max_workers: 12 # 前處理並行程序數
   skip_preprocessing: false
 
   # --- 資料集分割 ---
-  dataset_dir: "dataset"                      # 分割後資料集根目錄
-  split_ratio: 0.8                            # 訓練集比例
-  n_runs: 5                                   # 多 Run 重複次數
-  base_seed: 42                               # 基礎隨機種子
+  dataset_dir: "dataset" # 分割後資料集根目錄
+  split_ratio: 0.8 # 訓練集比例
+  n_runs: 5 # 多 Run 重複次數
+  base_seed: 42 # 基礎隨機種子
 
   # --- 資料集子路徑結構 ---
   train_subpath: "Component_Dataset/train"
@@ -48,24 +48,24 @@ data:
 # 模型設定 (Model Architecture)
 # ------------------------------------------------------------------------------
 model:
-  backbone: "resnet18"                        # 骨幹網路: resnet18 / resnet50
-  pretrained: true                            # 是否載入 ImageNet 預訓練權重
-  in_channels: 1                              # 輸入通道數: 1=灰階, 3=RGB
-  proj_dim: 2048                              # Projector 輸出維度
-  pred_hidden: 512                            # Predictor 隱藏層維度
+  backbone: "resnet18" # 骨幹網路: resnet18 / resnet50
+  pretrained: true # 是否載入 ImageNet 預訓練權重
+  in_channels: 1 # 輸入通道數: 1=灰階, 3=RGB
+  proj_dim: 2048 # Projector 輸出維度
+  pred_hidden: 512 # Predictor 隱藏層維度
 
 # ------------------------------------------------------------------------------
 # 訓練設定 (Training Hyperparameters)
 # ------------------------------------------------------------------------------
 training:
-  img_size: 512                               # 輸入影像尺寸 (正方形)
-  epochs: 200                                 # 每 Run 訓練 epoch 數
-  batch_size: 64                              # Batch 大小
-  lr: 2.0e-5                                  # 學習率
-  weight_decay: 1.0e-5                        # AdamW 權重衰減
-  num_workers: 8                              # DataLoader 工作程序數
-  prefetch_factor: 2                          # DataLoader 預取因子
-  img_exts:                                   # 支援的影像格式
+  img_size: 512 # 輸入影像尺寸 (正方形)
+  epochs: 200 # 每 Run 訓練 epoch 數
+  batch_size: 64 # Batch 大小
+  lr: 2.0e-5 # 學習率
+  weight_decay: 1.0e-5 # AdamW 權重衰減
+  num_workers: 8 # DataLoader 工作程序數
+  prefetch_factor: 2 # DataLoader 預取因子
+  img_exts: # 支援的影像格式
     - ".jpg"
     - ".png"
     - ".bmp"
@@ -76,15 +76,15 @@ training:
 # 實驗追蹤設定 (Experiment Tracking)
 # ------------------------------------------------------------------------------
 experiment:
-  output_dir: "outputs"                       # 實驗結果輸出根目錄
-  exp_name: "simsiam_exp"                     # 實驗名稱前綴
-  save_freq: 10                               # Checkpoint 儲存頻率 (epochs)
-  log_file: "training.log"                    # 日誌檔名
+  output_dir: "outputs" # 實驗結果輸出根目錄
+  exp_name: "simsiam_exp" # 實驗名稱前綴
+  save_freq: 10 # Checkpoint 儲存頻率 (epochs)
+  log_file: "training.log" # 日誌檔名
 
 # ------------------------------------------------------------------------------
 # 日誌設定 (Logging)
 # ------------------------------------------------------------------------------
 logging:
-  level: "INFO"                               # 日誌等級: DEBUG / INFO / WARNING / ERROR
-  log_to_file: true                           # 是否輸出至檔案
-  use_rich: true                              # 是否使用 Rich Handler 美化 Console 輸出
+  level: "INFO" # 日誌等級: DEBUG / INFO / WARNING / ERROR
+  log_to_file: true # 是否輸出至檔案
+  use_rich: true # 是否使用 Rich Handler 美化 Console 輸出

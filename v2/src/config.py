@@ -15,7 +15,7 @@
 
 使用範例::
 
-    cfg = AppConfig.from_yaml("configs/default.yaml", cli_overrides=sys.argv[1:])
+    cfg = AppConfig.from_yaml("v2/configs/default.yaml", cli_overrides=sys.argv[1:])
     cfg.validate()
 ============================================================
 """
@@ -155,6 +155,21 @@ class ExperimentConfig:
     log_file: str = "training.log"
 
 
+@dataclass
+class LoggingConfig:
+    """日誌設定。
+
+    Attributes:
+        level: 日誌等級 (DEBUG, INFO, WARNING, ERROR)。
+        log_to_file: 是否輸出至檔案。
+        use_rich: 是否使用 Rich Handler 美化輸出。
+    """
+
+    level: str = "INFO"
+    log_to_file: bool = True
+    use_rich: bool = True
+
+
 # ============================================================
 # 頂層設定 (Top-Level Config)
 # ============================================================
@@ -175,6 +190,7 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # ----------------------------------------------------------
     # 工廠方法

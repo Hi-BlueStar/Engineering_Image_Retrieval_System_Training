@@ -52,6 +52,8 @@ class CheckpointManager:
         epoch: int,
         val_loss: float,
         is_best: bool = False,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+        scaler: Optional[torch.amp.GradScaler] = None,
     ) -> None:
         """儲存模型 Checkpoint。
 
@@ -61,6 +63,8 @@ class CheckpointManager:
             epoch: 當前 epoch。
             val_loss: 當前驗證集 loss。
             is_best: 是否為目前最佳模型。
+            scheduler: 可選的學習率排程器（儲存狀態以支援 Resume）。
+            scaler: 可選的 GradScaler（儲存狀態以支援 Resume）。
         """
         state = {
             "epoch": epoch,
@@ -69,6 +73,10 @@ class CheckpointManager:
             "val_loss": val_loss,
             "config": self.config_dict,
         }
+        if scheduler is not None:
+            state["scheduler"] = scheduler.state_dict()
+        if scaler is not None:
+            state["scaler"] = scaler.state_dict()
 
         # 1. 最新 checkpoint（每 epoch 覆蓋）
         last_path = self.ckpt_dir / "checkpoint_last.pth"
@@ -93,13 +101,17 @@ class CheckpointManager:
         path: str | Path,
         model: nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+        scaler: Optional[torch.amp.GradScaler] = None,
     ) -> Dict[str, Any]:
-        """從 Checkpoint 載入模型權重與優化器狀態。
+        """從 Checkpoint 載入模型權重與訓練狀態。
 
         Args:
             path: Checkpoint 檔案路徑。
             model: 目標模型（將被載入權重）。
             optimizer: 可選的優化器（將被載入狀態）。
+            scheduler: 可選的學習率排程器（將被載入狀態）。
+            scaler: 可選的 GradScaler（將被載入狀態）。
 
         Returns:
             Dict[str, Any]: Checkpoint 的完整狀態字典。
@@ -116,6 +128,10 @@ class CheckpointManager:
 
         if optimizer is not None and "optimizer" in state:
             optimizer.load_state_dict(state["optimizer"])
+        if scheduler is not None and "scheduler" in state:
+            scheduler.load_state_dict(state["scheduler"])
+        if scaler is not None and "scaler" in state:
+            scaler.load_state_dict(state["scaler"])
 
         logger.info(
             "Checkpoint 載入完成: %s (epoch=%d, val_loss=%.4f)",
@@ -124,3 +140,22 @@ class CheckpointManager:
             state.get("val_loss", float("inf")),
         )
         return state
+
+    def find_latest_checkpoint(self) -> Optional[Path]:
+        """掃描目錄，自動找出最新的 Checkpoint 檔案。
+
+        優先回傳 ``checkpoint_last.pth``（每 epoch 覆蓋，永遠是最新）；
+        若不存在則掃描 ``checkpoint_epoch_XXXX.pth`` 取最大 epoch。
+
+        Returns:
+            Optional[Path]: 最新 Checkpoint 路徑；目錄無任何 checkpoint 時回傳 ``None``。
+        """
+        last = self.ckpt_dir / "checkpoint_last.pth"
+        if last.is_file():
+            return last
+
+        epoch_ckpts = sorted(self.ckpt_dir.glob("checkpoint_epoch_*.pth"))
+        if epoch_ckpts:
+            return epoch_ckpts[-1]
+
+        return None

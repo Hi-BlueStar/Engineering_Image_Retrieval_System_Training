@@ -159,6 +159,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     use_augmentation: bool = True
     use_gpu_augmentation: bool = True
+    resume: bool = True
 
 
 @dataclass

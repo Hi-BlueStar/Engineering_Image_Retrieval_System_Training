@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from src.dataset.gpu_transforms import GPUAugmentation
 from src.model.loss import calculate_collapse_std, simsiam_loss
@@ -83,6 +84,8 @@ class Trainer:
         val_loader: DataLoader,
         epochs: int,
         *,
+        start_epoch: int = 1,
+        best_val_loss: float = float("inf"),
         epoch_callback: Optional[Callable[[dict], None]] = None,
     ) -> dict[str, Any]:
         """執行完整的多 epoch 訓練迴圈。
@@ -90,26 +93,39 @@ class Trainer:
         Args:
             train_loader: 訓練 DataLoader。
             val_loader: 驗證 DataLoader。
-            epochs: 訓練 epoch 數。
+            epochs: 總 epoch 數（不含已完成的 epoch）。
+            start_epoch: 起始 epoch（Resume 時 > 1）。
+            best_val_loss: 已知最佳 val_loss（Resume 時從 checkpoint 傳入）。
             epoch_callback: 每 epoch 結束後的可選回呼函式，
                 接受一個包含該 epoch 指標的字典。
 
         Returns:
             dict: 訓練結果摘要，包含 ``best_val_loss`` 等。
         """
-        best_val_loss = float("inf")
         use_amp = self.scaler.is_enabled() and str(self.device).startswith("cuda")
         has_val = len(val_loader) > 0
 
+        if start_epoch > epochs:
+            logger.info("訓練已完成 (start_epoch=%d > epochs=%d)，跳過", start_epoch, epochs)
+            return {"best_val_loss": best_val_loss}
+
         logger.info(
-            "開始訓練: epochs=%d, AMP=%s, device=%s, has_val=%s",
+            "開始訓練: epochs=%d, start=%d, AMP=%s, device=%s, has_val=%s",
             epochs,
+            start_epoch,
             use_amp,
             self.device,
             has_val,
         )
 
-        for epoch in range(1, epochs + 1):
+        epoch_iter = tqdm(
+            range(start_epoch, epochs + 1),
+            initial=start_epoch - 1,
+            total=epochs,
+            desc="訓練進度",
+            unit="epoch",
+        )
+        for epoch in epoch_iter:
             epoch_timer = PrecisionTimer(f"epoch_{epoch}")
             epoch_timer.start()
             wall_start = time.perf_counter()
@@ -134,7 +150,8 @@ class Trainer:
                 best_val_loss = val_loss
 
             self.checkpoint_mgr.save(
-                self.model, self.optimizer, epoch, val_loss, is_best
+                self.model, self.optimizer, epoch, val_loss, is_best,
+                scheduler=self.scheduler, scaler=self.scaler,
             )
 
             epoch_timer.resume()
@@ -162,6 +179,13 @@ class Trainer:
 
             if epoch_callback:
                 epoch_callback(metrics)
+
+            epoch_iter.set_postfix(
+                train=f"{train_loss:.4f}",
+                val=f"{val_loss:.4f}",
+                lr=f"{current_lr:.1e}",
+                best=f"{best_val_loss:.4f}",
+            )
 
             # --- 週期性日誌 ---
             if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
@@ -205,7 +229,7 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Train", unit="batch", leave=False, dynamic_ncols=True):
             if self.gpu_aug is not None:
                 # GPU 增強模式：batch = raw tensor [B, C, H, W]
                 raw = batch.to(self.device, non_blocking=True)
@@ -283,7 +307,7 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Eval", unit="batch", leave=False, dynamic_ncols=True):
             if self.gpu_aug is not None:
                 raw = batch.to(self.device, non_blocking=True)
                 v1, v2 = self.gpu_aug.create_views(raw)

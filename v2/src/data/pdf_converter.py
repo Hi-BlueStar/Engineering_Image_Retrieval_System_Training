@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import List, Tuple
 
 import fitz  # PyMuPDF
-from tqdm import tqdm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from src.logger import get_logger
 
@@ -55,9 +62,17 @@ def convert_pdfs_to_images(
     args = [(p, dst_dir, dpi) for p in pdf_files]
     success = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_convert_one, *a): a[0] for a in args}
-        with tqdm(total=len(futures), desc="PDF 轉換", unit="pdf") as pbar:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        refresh_per_second=4,
+    ) as progress:
+        task = progress.add_task("PDF 轉換", total=len(args))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_convert_one, *a): a[0] for a in args}
             for fut in as_completed(futures):
                 pdf_path = futures[fut]
                 try:
@@ -67,7 +82,7 @@ def convert_pdfs_to_images(
                         logger.debug("轉換完成: %s (%d 頁)", pdf_path.name, n)
                 except Exception as exc:
                     logger.error("轉換失敗: %s — %s", pdf_path.name, exc)
-                pbar.update(1)
+                progress.advance(task)
 
     logger.info("PDF 轉換完成: %d/%d 成功，輸出至 %s", success, len(pdf_files), dst_dir)
 

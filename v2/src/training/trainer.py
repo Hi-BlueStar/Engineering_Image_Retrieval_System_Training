@@ -32,7 +32,20 @@ from typing import Any, Callable, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 
 from src.dataset.gpu_transforms import GPUAugmentation
 from src.model.loss import calculate_collapse_std, simsiam_loss
@@ -41,6 +54,21 @@ from src.training.timer import PrecisionTimer
 from src.logger import get_logger
 
 logger = get_logger(__name__)
+_console = Console()
+
+
+def _make_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold]{task.description}", justify="left"),
+        BarColumn(bar_width=38),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        TextColumn("{task.fields[info]}", justify="right"),
+        console=_console,
+        refresh_per_second=4,
+    )
 
 
 class Trainer:
@@ -118,89 +146,114 @@ class Trainer:
             has_val,
         )
 
-        epoch_iter = tqdm(
-            range(start_epoch, epochs + 1),
-            initial=start_epoch - 1,
-            total=epochs,
-            desc="訓練進度",
-            unit="epoch",
-        )
-        for epoch in epoch_iter:
-            epoch_timer = PrecisionTimer(f"epoch_{epoch}")
-            epoch_timer.start()
-            wall_start = time.perf_counter()
+        remaining = epochs - start_epoch + 1
 
-            # --- Train ---
-            train_loss, train_std = self._train_one_epoch(
-                train_loader, use_amp
+        with _make_progress() as progress:
+            epoch_task = progress.add_task(
+                "[cyan]訓練進度",
+                total=remaining,
+                info="",
             )
 
-            # --- Evaluate ---
-            if has_val:
-                val_loss, val_std = self._evaluate(val_loader, use_amp)
-            else:
-                # 無驗證集時以訓練損失作為監控指標
-                val_loss, val_std = train_loss, train_std
+            for epoch in range(start_epoch, epochs + 1):
+                epoch_timer = PrecisionTimer(f"epoch_{epoch}")
+                epoch_timer.start()
+                wall_start = time.perf_counter()
 
-            # --- Checkpoint (暫停計時) ---
-            epoch_timer.pause()
+                # --- Train ---
+                train_task = progress.add_task(
+                    f"[green]  ├─ Train [{epoch}/{epochs}]",
+                    total=len(train_loader),
+                    info="",
+                )
+                train_loss, train_std = self._train_one_epoch(
+                    train_loader, use_amp, progress, train_task
+                )
+                progress.remove_task(train_task)
 
-            is_best = val_loss < best_val_loss
-            if is_best:
-                best_val_loss = val_loss
+                # --- Evaluate ---
+                if has_val:
+                    eval_task = progress.add_task(
+                        f"[yellow]  └─ Eval  [{epoch}/{epochs}]",
+                        total=len(val_loader),
+                        info="",
+                    )
+                    val_loss, val_std = self._evaluate(
+                        val_loader, use_amp, progress, eval_task
+                    )
+                    progress.remove_task(eval_task)
+                else:
+                    val_loss, val_std = train_loss, train_std
 
-            self.checkpoint_mgr.save(
-                self.model, self.optimizer, epoch, val_loss, is_best,
-                scheduler=self.scheduler, scaler=self.scaler,
-            )
+                # --- Checkpoint (暫停計時) ---
+                epoch_timer.pause()
 
-            epoch_timer.resume()
+                is_best = val_loss < best_val_loss
+                if is_best:
+                    best_val_loss = val_loss
 
-            # --- Scheduler ---
-            self.scheduler.step()
-
-            # --- 停止 epoch 計時 ---
-            epoch_net = epoch_timer.stop()
-            epoch_wall = time.perf_counter() - wall_start
-
-            # --- 指標收集 ---
-            current_lr = self.optimizer.param_groups[0]["lr"]
-            metrics = {
-                "epoch": epoch,
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-                "train_z_std": train_std,
-                "val_z_std": val_std,
-                "lr": current_lr,
-                "epoch_net_sec": epoch_net,
-                "epoch_wall_sec": epoch_wall,
-                "is_best": is_best,
-            }
-
-            if epoch_callback:
-                epoch_callback(metrics)
-
-            epoch_iter.set_postfix(
-                train=f"{train_loss:.4f}",
-                val=f"{val_loss:.4f}",
-                lr=f"{current_lr:.1e}",
-                best=f"{best_val_loss:.4f}",
-            )
-
-            # --- 週期性日誌 ---
-            if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
-                logger.info(
-                    "Epoch %d/%d — train_loss=%.4f, val_loss=%.4f, "
-                    "std=%.4f, lr=%.2e, net=%.1fs",
-                    epoch,
-                    epochs,
-                    train_loss,
-                    val_loss,
-                    train_std,
-                    current_lr,
-                    epoch_net,
+                self.checkpoint_mgr.save(
+                    self.model, self.optimizer, epoch, val_loss, is_best,
+                    scheduler=self.scheduler, scaler=self.scaler,
                 )
 
+                epoch_timer.resume()
+
+                # --- Scheduler ---
+                self.scheduler.step()
+
+                # --- 停止 epoch 計時 ---
+                epoch_net = epoch_timer.stop()
+                epoch_wall = time.perf_counter() - wall_start
+
+                # --- 指標收集 ---
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                metrics = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "train_z_std": train_std,
+                    "val_z_std": val_std,
+                    "lr": current_lr,
+                    "epoch_net_sec": epoch_net,
+                    "epoch_wall_sec": epoch_wall,
+                    "is_best": is_best,
+                }
+
+                if epoch_callback:
+                    epoch_callback(metrics)
+
+                best_marker = " [bold yellow]★[/]" if is_best else ""
+                info_str = (
+                    f"[green]t={train_loss:.4f}[/] "
+                    f"[yellow]v={val_loss:.4f}[/] "
+                    f"lr={current_lr:.1e} "
+                    f"best={best_val_loss:.4f}{best_marker}"
+                )
+                progress.update(epoch_task, advance=1, info=info_str)
+
+                # --- 週期性日誌 ---
+                if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
+                    logger.info(
+                        "Epoch %d/%d — train_loss=%.4f, val_loss=%.4f, "
+                        "std=%.4f, lr=%.2e, net=%.1fs",
+                        epoch,
+                        epochs,
+                        train_loss,
+                        val_loss,
+                        train_std,
+                        current_lr,
+                        epoch_net,
+                    )
+
+        _console.print(
+            Panel(
+                f"[bold green]訓練完成[/bold green]\n"
+                f"Best Val Loss: [cyan]{best_val_loss:.6f}[/cyan]",
+                title="[bold]Training Summary",
+                border_style="green",
+            )
+        )
         logger.info("訓練完成: best_val_loss=%.4f", best_val_loss)
         return {"best_val_loss": best_val_loss}
 
@@ -208,12 +261,16 @@ class Trainer:
         self,
         loader: DataLoader,
         use_amp: bool,
+        progress: Optional[Progress] = None,
+        task_id: Optional[TaskID] = None,
     ) -> Tuple[float, float]:
         """執行單個 epoch 的訓練。
 
         Args:
             loader: 訓練 DataLoader。
             use_amp: 是否啟用混合精度。
+            progress: Rich Progress 實例（由 fit() 傳入）。
+            task_id: 對應的 Progress task ID。
 
         Returns:
             Tuple[float, float]: ``(avg_loss, avg_std)``。
@@ -229,7 +286,7 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in tqdm(loader, desc="Train", unit="batch", leave=False, dynamic_ncols=True):
+        for batch in loader:
             if self.gpu_aug is not None:
                 # GPU 增強模式：batch = raw tensor [B, C, H, W]
                 raw = batch.to(self.device, non_blocking=True)
@@ -273,6 +330,13 @@ class Trainer:
 
             num_batches += 1
 
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    advance=1,
+                    info=f"[dim]loss={loss.item():.4f}[/]",
+                )
+
         return (
             total_loss / max(num_batches, 1),
             total_std / max(num_batches, 1),
@@ -283,6 +347,8 @@ class Trainer:
         self,
         loader: DataLoader,
         use_amp: bool,
+        progress: Optional[Progress] = None,
+        task_id: Optional[TaskID] = None,
     ) -> Tuple[float, float]:
         """驗證模型損失與標準差。
 
@@ -292,6 +358,8 @@ class Trainer:
         Args:
             loader: 驗證 DataLoader。
             use_amp: 是否啟用混合精度。
+            progress: Rich Progress 實例（由 fit() 傳入）。
+            task_id: 對應的 Progress task ID。
 
         Returns:
             Tuple[float, float]: ``(avg_loss, avg_std)``。
@@ -307,7 +375,7 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in tqdm(loader, desc="Eval", unit="batch", leave=False, dynamic_ncols=True):
+        for batch in loader:
             if self.gpu_aug is not None:
                 raw = batch.to(self.device, non_blocking=True)
                 v1, v2 = self.gpu_aug.create_views(raw)
@@ -326,6 +394,13 @@ class Trainer:
             ) / 2.0
             total_std += batch_std
             num_batches += 1
+
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    advance=1,
+                    info=f"[dim]loss={loss.item():.4f}[/]",
+                )
 
         return (
             total_loss / max(num_batches, 1),

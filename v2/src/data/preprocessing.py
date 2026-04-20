@@ -28,7 +28,14 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
-from tqdm import tqdm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from src.logger import get_logger
 
@@ -123,9 +130,17 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     ]
 
     success = 0
-    with ProcessPoolExecutor(max_workers=cfg.max_workers) as pool:
-        futures = {pool.submit(_process_one, *a): a[0] for a in args_list}
-        with tqdm(total=len(futures), desc="影像前處理", unit="img") as pbar:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold green]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        refresh_per_second=4,
+    ) as progress:
+        task = progress.add_task("影像前處理", total=len(args_list))
+        with ProcessPoolExecutor(max_workers=cfg.max_workers) as pool:
+            futures = {pool.submit(_process_one, *a): a[0] for a in args_list}
             for fut in as_completed(futures):
                 img_path = futures[fut]
                 try:
@@ -133,7 +148,7 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
                     success += 1
                 except Exception as exc:
                     logger.error("前處理失敗: %s — %s", Path(img_path).name, exc)
-                pbar.update(1)
+                progress.advance(task)
 
     logger.info("影像前處理完成: %d/%d 成功", success, len(images))
 

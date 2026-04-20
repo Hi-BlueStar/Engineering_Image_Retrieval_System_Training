@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import fitz  # PyMuPDF
+from tqdm import tqdm
 
 from src.logger import get_logger
 
@@ -56,20 +57,28 @@ def convert_pdfs_to_images(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_convert_one, *a): a[0] for a in args}
-        for fut in as_completed(futures):
-            pdf_path = futures[fut]
-            try:
-                n = fut.result()
-                success += 1
-                logger.debug("轉換完成: %s (%d 頁)", pdf_path.name, n)
-            except Exception as exc:
-                logger.error("轉換失敗: %s — %s", pdf_path.name, exc)
+        with tqdm(total=len(futures), desc="PDF 轉換", unit="pdf") as pbar:
+            for fut in as_completed(futures):
+                pdf_path = futures[fut]
+                try:
+                    n = fut.result()
+                    success += 1
+                    if n > 0:
+                        logger.debug("轉換完成: %s (%d 頁)", pdf_path.name, n)
+                except Exception as exc:
+                    logger.error("轉換失敗: %s — %s", pdf_path.name, exc)
+                pbar.update(1)
 
     logger.info("PDF 轉換完成: %d/%d 成功，輸出至 %s", success, len(pdf_files), dst_dir)
 
 
 def _convert_one(pdf_path: Path, dst_dir: Path, dpi: int) -> int:
-    """轉換單一 PDF，回傳轉換頁數。"""
+    """轉換單一 PDF，回傳轉換頁數；若輸出已存在回傳 0（跳過）。"""
+    # 斷點恢復：單頁或多頁第一頁已存在則跳過
+    if (dst_dir / f"{pdf_path.stem}.png").exists() or \
+       (dst_dir / f"{pdf_path.stem}_p000.png").exists():
+        return 0
+
     mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
     doc = fitz.open(str(pdf_path))
     n_pages = len(doc)

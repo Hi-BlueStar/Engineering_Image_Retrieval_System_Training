@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 from src.logger import get_logger
 
@@ -124,13 +125,15 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     success = 0
     with ProcessPoolExecutor(max_workers=cfg.max_workers) as pool:
         futures = {pool.submit(_process_one, *a): a[0] for a in args_list}
-        for fut in as_completed(futures):
-            img_path = futures[fut]
-            try:
-                fut.result()
-                success += 1
-            except Exception as exc:
-                logger.error("前處理失敗: %s — %s", Path(img_path).name, exc)
+        with tqdm(total=len(futures), desc="影像前處理", unit="img") as pbar:
+            for fut in as_completed(futures):
+                img_path = futures[fut]
+                try:
+                    fut.result()
+                    success += 1
+                except Exception as exc:
+                    logger.error("前處理失敗: %s — %s", Path(img_path).name, exc)
+                pbar.update(1)
 
     logger.info("影像前處理完成: %d/%d 成功", success, len(images))
 
@@ -151,9 +154,6 @@ def _process_one(
     from src.data.topology import sort_crops_by_topology, topology_guided_mask
 
     path = Path(img_path)
-    gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    if gray is None:
-        raise RuntimeError(f"無法讀取影像: {img_path}")
 
     # --- 保留類別相對路徑 ---
     try:
@@ -162,6 +162,15 @@ def _process_one(
         class_part = rel.parent   # Path(".") if flat, else Path("class_name")
     except ValueError:
         class_part = Path(".")
+
+    # --- 斷點恢復：輸出已齊全則跳過（避免重複讀圖與運算）---
+    out_dir = Path(dst_root) / class_part / path.stem
+    if out_dir.exists() and len(list(out_dir.glob("arr_*.png"))) >= cfg["random_count"]:
+        return None
+
+    gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise RuntimeError(f"無法讀取影像: {img_path}")
 
     # --- Step 1: Logo 移除 ---
     if cfg["remove_gifu_logo"]:
@@ -187,7 +196,6 @@ def _process_one(
             crops = sort_crops_by_topology(crops)
 
         h, w = gray.shape
-        out_dir = Path(dst_root) / class_part / path.stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
         rng = random.Random(hash(img_path))
@@ -201,7 +209,6 @@ def _process_one(
         if cfg["use_topology_analysis"]:
             gray = topology_guided_mask(gray)
 
-        out_dir = Path(dst_root) / class_part / path.stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # 無 CC 時直接複製/儲存影像（仍生成 random_count 張以保持一致性）

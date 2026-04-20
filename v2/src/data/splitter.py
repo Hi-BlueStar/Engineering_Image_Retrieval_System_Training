@@ -27,6 +27,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from tqdm import tqdm
+
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,7 +94,7 @@ def _stratified_split(
     total_train_stems = 0
     total_test_stems = 0
 
-    for class_dir in class_dirs:
+    for class_dir in tqdm(class_dirs, desc="分割類別", unit="class"):
         class_name = class_dir.name
         stems = _discover_stems(class_dir)
 
@@ -106,19 +108,24 @@ def _stratified_split(
         train_stems = shuffled[:n_train]
         test_stems = shuffled[n_train:]
 
-        # 訓練集：所有 arr_* 變體
+        # 訓練集：所有 arr_* 變體（斷點恢復：目的地已有檔案則跳過）
         for stem_dir in train_stems:
+            dst_class = dst_train / class_name / stem_dir.name
+            if dst_class.exists() and any(dst_class.iterdir()):
+                continue
             variants = sorted(stem_dir.glob("arr_*.png"))
             if not variants:
                 variants = [p for p in stem_dir.iterdir()
                             if p.suffix.lower() in _IMG_EXTS]
-            dst_class = dst_train / class_name / stem_dir.name
             dst_class.mkdir(parents=True, exist_ok=True)
             for v in variants:
                 shutil.copy2(v, dst_class / v.name)
 
-        # 測試集：每個 stem 取 arr_000.png（最具代表性）
+        # 測試集：每個 stem 取 arr_000.png（斷點恢復：目的地已有檔案則跳過）
         for stem_dir in test_stems:
+            dst_class = dst_test / class_name / stem_dir.name
+            if dst_class.exists() and any(dst_class.iterdir()):
+                continue
             arr_000 = stem_dir / "arr_000.png"
             if not arr_000.exists():
                 candidates = sorted(stem_dir.glob("arr_*.png"))
@@ -129,7 +136,6 @@ def _stratified_split(
                     arr_000 = candidates[0]
                 else:
                     continue
-            dst_class = dst_test / class_name / stem_dir.name
             dst_class.mkdir(parents=True, exist_ok=True)
             shutil.copy2(arr_000, dst_class / arr_000.name)
 
@@ -208,10 +214,13 @@ def _flat_split(
 
 
 def _copy_flat(images: List[Path], dst_dir: Path, src_root: Path) -> None:
-    for img in images:
+    for img in tqdm(images, desc="複製影像", unit="img", leave=False):
         try:
             rel = img.relative_to(src_root)
         except ValueError:
             rel = Path(img.name)
         flat_name = "_".join(rel.parts)
-        shutil.copy2(img, dst_dir / flat_name)
+        dst = dst_dir / flat_name
+        if dst.exists():
+            continue
+        shutil.copy2(img, dst)

@@ -89,6 +89,7 @@ training:
   grad_clip: 1.0
   use_augmentation: true                  # 完整工程圖增強（旋轉、ColorJitter 等）
   use_gpu_augmentation: true             # 在 GPU 上做增強（解決 CPU 瓶頸）
+  resume: true                           # 自動從最新 checkpoint 恢復訓練
 
 # ------------------------------------------------------------------------------
 # 實驗追蹤設定 (Experiment Tracking)

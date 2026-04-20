@@ -167,11 +167,30 @@ def _run_single_training(
             gpu_aug=gpu_aug,
         )
 
+        # --- 斷點恢復 ---
+        start_epoch = 1
+        resume_best_val_loss = float("inf")
+        if t.resume:
+            latest_ckpt = ckpt_mgr.find_latest_checkpoint()
+            if latest_ckpt is not None:
+                state = ckpt_mgr.load(
+                    latest_ckpt, model, optimizer, scheduler, scaler
+                )
+                start_epoch = state.get("epoch", 0) + 1
+                resume_best_val_loss = state.get("val_loss", float("inf"))
+                logger.info(
+                    "Resume 成功: %s → 從 epoch %d 繼續訓練",
+                    latest_ckpt.name,
+                    start_epoch,
+                )
+
         # --- 訓練 ---
         result = trainer.fit(
             train_loader=train_loader,
             val_loader=val_loader,
             epochs=t.epochs,
+            start_epoch=start_epoch,
+            best_val_loss=resume_best_val_loss,
             epoch_callback=lambda metrics: run_tracker.log_epoch(metrics),
         )
 

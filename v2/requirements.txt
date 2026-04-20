@@ -21,6 +21,8 @@ pandas>=2.0.0
 
 # --- Visualization ---
 plotly>=5.15.0
+matplotlib>=3.7.0
+seaborn>=0.13.0
 
 # --- Logging & UI ---
 rich>=13.0.0

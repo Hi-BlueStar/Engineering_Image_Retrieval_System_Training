@@ -27,7 +27,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from tqdm import tqdm
+from rich.progress import track
 
 from src.logger import get_logger
 
@@ -94,7 +94,7 @@ def _stratified_split(
     total_train_stems = 0
     total_test_stems = 0
 
-    for class_dir in tqdm(class_dirs, desc="分割類別", unit="class"):
+    for class_dir in track(class_dirs, description="[cyan]分割類別"):
         class_name = class_dir.name
         stems = _discover_stems(class_dir)
 
@@ -214,7 +214,7 @@ def _flat_split(
 
 
 def _copy_flat(images: List[Path], dst_dir: Path, src_root: Path) -> None:
-    for img in tqdm(images, desc="複製影像", unit="img", leave=False):
+    for img in track(images, description="[green]複製影像", transient=True):
         try:
             rel = img.relative_to(src_root)
         except ValueError:

@@ -22,18 +22,29 @@
 
 from __future__ import annotations
 
+import os
 import random
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from rich.progress import track
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    track,
+)
 
 from src.logger import get_logger
 
 logger = get_logger(__name__)
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+_MAX_IO_WORKERS = 32
 
 
 def split_dataset(
@@ -42,6 +53,7 @@ def split_dataset(
     run_name: str,
     split_ratio: float = 0.8,
     seed: int = 42,
+    use_hardlinks: bool = False,
 ) -> Tuple[int, int]:
     """分層抽樣分割：保持各類別比例，以 stem 為單位分割。
 
@@ -55,6 +67,7 @@ def split_dataset(
         run_name: Run 識別名稱。
         split_ratio: 訓練集佔比（0, 1）。
         seed: 隨機種子。
+        use_hardlinks: True 時以 os.link 硬連結代替複製（同一檔案系統限定）。
 
     Returns:
         Tuple[int, int]: (n_train_stems, n_test_stems) 原始影像數量。
@@ -70,9 +83,9 @@ def split_dataset(
     has_classes = bool(class_dirs)
 
     if has_classes:
-        return _stratified_split(src, dst_train, dst_test, split_ratio, seed)
+        return _stratified_split(src, dst_train, dst_test, split_ratio, seed, use_hardlinks)
     else:
-        return _flat_split(src, dst_train, dst_test, split_ratio, seed)
+        return _flat_split(src, dst_train, dst_test, split_ratio, seed, use_hardlinks)
 
 
 # ============================================================
@@ -86,6 +99,7 @@ def _stratified_split(
     dst_test: Path,
     split_ratio: float,
     seed: int,
+    use_hardlinks: bool = False,
 ) -> Tuple[int, int]:
     """以類別子目錄為基礎進行分層抽樣。"""
     class_dirs = sorted(d for d in src.iterdir() if d.is_dir())
@@ -93,6 +107,7 @@ def _stratified_split(
 
     total_train_stems = 0
     total_test_stems = 0
+    copy_tasks: List[Tuple[Path, Path]] = []
 
     for class_dir in track(class_dirs, description="[cyan]分割類別"):
         class_name = class_dir.name
@@ -119,7 +134,9 @@ def _stratified_split(
                             if p.suffix.lower() in _IMG_EXTS]
             dst_class.mkdir(parents=True, exist_ok=True)
             for v in variants:
-                shutil.copy2(v, dst_class / v.name)
+                dst = dst_class / v.name
+                if not dst.exists():
+                    copy_tasks.append((v, dst))
 
         # 測試集：每個 stem 取 arr_000.png（斷點恢復：目的地已有檔案則跳過）
         for stem_dir in test_stems:
@@ -137,7 +154,9 @@ def _stratified_split(
                 else:
                     continue
             dst_class.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(arr_000, dst_class / arr_000.name)
+            dst = dst_class / arr_000.name
+            if not dst.exists():
+                copy_tasks.append((arr_000, dst))
 
         total_train_stems += len(train_stems)
         total_test_stems += len(test_stems)
@@ -149,6 +168,9 @@ def _stratified_split(
             len(test_stems),
         )
 
+    if copy_tasks:
+        _parallel_copy(copy_tasks, use_hardlinks=use_hardlinks)
+
     logger.info(
         "分層分割完成 [%s]: train_stems=%d, test_stems=%d",
         dst_train.parent.name,
@@ -156,6 +178,39 @@ def _stratified_split(
         total_test_stems,
     )
     return total_train_stems, total_test_stems
+
+
+def _parallel_copy(tasks: List[Tuple[Path, Path]], use_hardlinks: bool = False) -> None:
+    """以 ThreadPoolExecutor 並行複製/硬連結檔案。"""
+    def _do(src_dst: Tuple[Path, Path]) -> None:
+        src, dst = src_dst
+        if dst.exists():
+            return
+        if use_hardlinks:
+            try:
+                os.link(src, dst)
+                return
+            except OSError:
+                pass
+        shutil.copy2(src, dst)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold green]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        refresh_per_second=4,
+    ) as progress:
+        t = progress.add_task("複製/連結檔案", total=len(tasks))
+        with ThreadPoolExecutor(max_workers=_MAX_IO_WORKERS) as pool:
+            futs = [pool.submit(_do, task) for task in tasks]
+            for fut in as_completed(futs):
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.warning("檔案複製失敗: %s", exc)
+                progress.advance(t)
 
 
 def _discover_stems(class_dir: Path) -> List[Path]:
@@ -183,10 +238,14 @@ def _flat_split(
     dst_test: Path,
     split_ratio: float,
     seed: int,
+    use_hardlinks: bool = False,
 ) -> Tuple[int, int]:
     """無類別子目錄時的隨機分割。"""
     images: List[Path] = sorted(
-        p for p in src.rglob("*") if p.suffix.lower() in _IMG_EXTS
+        Path(dp) / fn
+        for dp, _, fns in os.walk(src)
+        for fn in fns
+        if Path(fn).suffix.lower() in _IMG_EXTS
     )
 
     if not images:
@@ -201,8 +260,8 @@ def _flat_split(
     train_imgs = shuffled[:n_train]
     test_imgs = shuffled[n_train:]
 
-    _copy_flat(train_imgs, dst_train, src)
-    _copy_flat(test_imgs, dst_test, src)
+    _copy_flat(train_imgs, dst_train, src, use_hardlinks)
+    _copy_flat(test_imgs, dst_test, src, use_hardlinks)
 
     logger.info(
         "平坦分割完成: train=%d, test=%d (共 %d 張)",
@@ -213,14 +272,16 @@ def _flat_split(
     return len(train_imgs), len(test_imgs)
 
 
-def _copy_flat(images: List[Path], dst_dir: Path, src_root: Path) -> None:
-    for img in track(images, description="[green]複製影像", transient=True):
+def _copy_flat(images: List[Path], dst_dir: Path, src_root: Path, use_hardlinks: bool = False) -> None:
+    tasks: List[Tuple[Path, Path]] = []
+    for img in images:
         try:
             rel = img.relative_to(src_root)
         except ValueError:
             rel = Path(img.name)
         flat_name = "_".join(rel.parts)
         dst = dst_dir / flat_name
-        if dst.exists():
-            continue
-        shutil.copy2(img, dst)
+        if not dst.exists():
+            tasks.append((img, dst))
+    if tasks:
+        _parallel_copy(tasks, use_hardlinks=use_hardlinks)

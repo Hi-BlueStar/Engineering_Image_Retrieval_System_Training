@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+_CHUNK_SIZE = 64
 
 
 @dataclass
@@ -95,10 +97,12 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     dst_root.mkdir(parents=True, exist_ok=True)
 
     # 支援類別子目錄與平坦目錄
-    images = [
-        p for p in src_dir.rglob("*")
-        if p.suffix.lower() in _IMG_EXTS
-    ]
+    images = sorted(
+        Path(dp) / fn
+        for dp, _, fns in os.walk(src_dir)
+        for fn in fns
+        if Path(fn).suffix.lower() in _IMG_EXTS
+    )
 
     if not images:
         logger.warning("前處理輸入目錄無影像: %s", src_dir)
@@ -128,6 +132,7 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     args_list = [
         (str(p), str(src_dir), str(dst_root), cfg_dict) for p in images
     ]
+    chunks = [args_list[i:i + _CHUNK_SIZE] for i in range(0, len(args_list), _CHUNK_SIZE)]
 
     success = 0
     with Progress(
@@ -140,15 +145,19 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     ) as progress:
         task = progress.add_task("影像前處理", total=len(args_list))
         with ProcessPoolExecutor(max_workers=cfg.max_workers) as pool:
-            futures = {pool.submit(_process_one, *a): a[0] for a in args_list}
+            futures = {pool.submit(_process_chunk, chunk): chunk for chunk in chunks}
             for fut in as_completed(futures):
-                img_path = futures[fut]
+                chunk = futures[fut]
                 try:
-                    fut.result()
-                    success += 1
+                    for img_path, err_msg in fut.result():
+                        if err_msg is None:
+                            success += 1
+                        else:
+                            logger.error("前處理失敗: %s — %s", Path(img_path).name, err_msg)
+                        progress.advance(task)
                 except Exception as exc:
-                    logger.error("前處理失敗: %s — %s", Path(img_path).name, exc)
-                progress.advance(task)
+                    logger.error("Chunk 執行失敗 (%d 張): %s", len(chunk), exc)
+                    progress.advance(task, len(chunk))
 
     logger.info("影像前處理完成: %d/%d 成功", success, len(images))
 
@@ -158,6 +167,19 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
 # ============================================================
 
 
+def _process_chunk(chunk: list) -> list:
+    """批次處理一組影像，回傳 (path, error_msg|None) 清單。"""
+    results = []
+    for args in chunk:
+        img_path = args[0]
+        try:
+            _process_one(*args)
+            results.append((img_path, None))
+        except Exception as exc:
+            results.append((img_path, str(exc)))
+    return results
+
+
 def _process_one(
     img_path: str,
     src_root: str,
@@ -165,6 +187,7 @@ def _process_one(
     cfg: dict,
 ) -> None:
     """處理單張影像：前處理 → 生成 random_count 個變體。"""
+    cv2.setNumThreads(0)
     from src.data.logo_removal import remove_logo
     from src.data.topology import sort_crops_by_topology, topology_guided_mask
 

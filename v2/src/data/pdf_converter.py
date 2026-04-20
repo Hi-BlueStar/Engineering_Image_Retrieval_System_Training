@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
 
@@ -50,7 +51,10 @@ def convert_pdfs_to_images(
     dst_dir.mkdir(parents=True, exist_ok=True)
 
     pdf_files: List[Path] = sorted(
-        p for p in src_dir.rglob("*") if p.suffix.lower() == ".pdf"
+        Path(dp) / fn
+        for dp, _, fns in os.walk(src_dir)
+        for fn in fns
+        if fn.lower().endswith(".pdf")
     )
 
     if not pdf_files:
@@ -71,7 +75,7 @@ def convert_pdfs_to_images(
         refresh_per_second=4,
     ) as progress:
         task = progress.add_task("PDF 轉換", total=len(args))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(_convert_one, *a): a[0] for a in args}
             for fut in as_completed(futures):
                 pdf_path = futures[fut]

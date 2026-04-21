@@ -43,16 +43,16 @@ def remove_logo(
     Returns:
         np.ndarray: 移除 Logo 後的影像（Logo 區域填白）。
     """
-    image = image.copy()
+    image_c = image.copy()
 
-    if template_path and Path(template_path).is_file():
-        image = _remove_by_template(image, template_path, match_threshold)
-    elif mask_region and len(mask_region) == 4:
-        image = _remove_by_mask(image, mask_region)
+    if mask_region and len(mask_region) == 4:
+        image_c = _remove_by_mask(image_c, mask_region)
+    elif template_path and Path(template_path).is_file():
+        image_c = _remove_by_template(image_c, template_path, match_threshold)
     else:
-        image = _remove_by_corner_detection(image)
+        image_c = _remove_by_corner_detection(image_c)
 
-    return image
+    return image_c
 
 
 # ============================================================
@@ -81,7 +81,7 @@ def _remove_by_template(
         image[pt[1]: pt[1] + th, pt[0]: pt[0] + tw] = 255
 
     if len(locations[0]) > 0:
-        logger.debug("模板匹配移除 %d 個 Logo 實例", len(locations[0]))
+        logger.info("模板匹配移除 %d 個 Logo 實例", len(locations[0]))
 
     return image
 
@@ -101,7 +101,7 @@ def _remove_by_mask(
 
 def _remove_by_corner_detection(
     image: np.ndarray,
-    corner_ratio: float = 0.15,
+    corner_ratio: float = 0.10,
     density_threshold: float = 0.3,
 ) -> np.ndarray:
     """在四個角落尋找高密度小區域（疑似 Logo）並清除。

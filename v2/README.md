@@ -140,6 +140,10 @@ training:
 ### 3.2 執行資料預處理
 
 ```bash
+sudo rm -rf data/converted_images data/preprocessed_images data/raw_pdfs dataset
+```
+
+```bash
 # 完整流程：解壓 → PDF轉圖 → 前處理 → 分割
 uv run python v2/prepare_data.py --config v2/configs/default.yaml
 

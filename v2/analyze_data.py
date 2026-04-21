@@ -46,7 +46,10 @@ if str(_HERE) not in sys.path:
 from rich.console import Console
 from rich.panel import Panel
 
+from src.logger import setup_logging, get_logger
+
 console = Console()
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -109,6 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # ---- Global Logging arguments ----
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="日誌等級 (預設: INFO)")
+    parser.add_argument("--log-file", default=None, help="日誌檔案路徑")
+
     # ---- eda ----
     p_eda = sub.add_parser("eda", help="深度探索性資料分析 (EDA)")
     p_eda.add_argument("--data-dir", required=True, help="影像來源目錄（支援類別子目錄）")
@@ -162,6 +169,11 @@ def main() -> None:
     )
     parser = build_parser()
     args = parser.parse_args()
+
+    # 初始化日誌 (使用 force=True 以確保 CLI 參數覆蓋模組匯入時的預設配置)
+    setup_logging(level=args.log_level, log_file=args.log_file, use_rich=True, force=True)
+
+    logger.info("Starting SimSiam v2 Data Analysis Toolkit")
     args.func(args)
 
 

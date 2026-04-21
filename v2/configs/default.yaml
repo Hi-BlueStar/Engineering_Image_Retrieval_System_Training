@@ -15,11 +15,11 @@
 # ------------------------------------------------------------------------------
 data:
   # --- 壓縮檔設定 ---
-  raw_zip_path: null                       # 原始壓縮檔路徑，null 表示不解壓
+  raw_zip_path: "data/PDF.zip" # 原始壓縮檔路徑，null 表示不解壓
   skip_extraction: false
 
   # --- PDF 轉換 ---
-  raw_pdf_dir: "data/raw_pdfs"             # 類別子目錄結構: data/raw_pdfs/<class>/
+  raw_pdf_dir: "data/raw_pdfs" # 類別子目錄結構: data/raw_pdfs/<class>/
   converted_image_dir: "data/converted_images"
   pdf_dpi: 100
   pdf_max_workers: 16
@@ -36,24 +36,24 @@ data:
   skip_preprocessing: false
 
   # --- 消融實驗前處理旗標 ---
-  use_connected_components: true           # 連通元件分析 + 隨機排列
-  use_topology_analysis: true             # 拓撲感知元件排序（孔洞數）
-  remove_gifu_logo: true                  # 移除 Gifu Logo
-  logo_template_path: null               # Logo 模板路徑（null=自動偵測角落）
-  logo_mask_region: null                 # [x1_r, y1_r, x2_r, y2_r]（可選）
+  use_connected_components: true # 連通元件分析 + 隨機排列
+  use_topology_analysis: true # 拓撲感知元件排序（孔洞數）
+  remove_gifu_logo: true # 移除 Gifu Logo
+  logo_template_path: "data/Gifu_logo.png" # Logo 模板路徑（null=自動偵測角落）
+  logo_mask_region: [0.7, 0.7, 0.9, 0.9] # [x1_r, y1_r, x2_r, y2_r]（可選）
 
   # --- 資料集分割 ---
   dataset_dir: "dataset"
-  split_ratio: 0.8                        # 訓練集比例（測試集 = 1 - split_ratio）
+  split_ratio: 0.8 # 訓練集比例（測試集 = 1 - split_ratio）
   test_split_ratio: 0.2
   n_runs: 1
   base_seed: 42
   train_subpath: "Component_Dataset/train"
-  val_subpath: "Component_Dataset/train"  # val = train 子集（SimSiam 無監督）
-  test_subpath: "Component_Dataset/test"  # 評估用測試集
+  val_subpath: "Component_Dataset/train" # val = train 子集（SimSiam 無監督）
+  test_subpath: "Component_Dataset/test" # 評估用測試集
 
   # --- 評估設定 ---
-  labeled_data_path: "data/converted_images"   # 含類別子目錄的評估資料集
+  labeled_data_path: "data/converted_images" # 含類別子目錄的評估資料集
   eval_top_k_values: [1, 5, 10]
 
 # ------------------------------------------------------------------------------
@@ -76,7 +76,7 @@ training:
   batch_size: 64
   lr: 2.0e-5
   weight_decay: 1.0e-5
-  num_workers: 4                           # GPU aug 模式下 workers 數可減少
+  num_workers: 4 # GPU aug 模式下 workers 數可減少
   prefetch_factor: 2
   img_exts:
     - ".jpg"
@@ -87,9 +87,9 @@ training:
   use_amp: true
   scheduler: "cosine"
   grad_clip: 1.0
-  use_augmentation: true                  # 完整工程圖增強（旋轉、ColorJitter 等）
-  use_gpu_augmentation: true             # 在 GPU 上做增強（解決 CPU 瓶頸）
-  resume: true                           # 自動從最新 checkpoint 恢復訓練
+  use_augmentation: true # 完整工程圖增強（旋轉、ColorJitter 等）
+  use_gpu_augmentation: true # 在 GPU 上做增強（解決 CPU 瓶頸）
+  resume: true # 自動從最新 checkpoint 恢復訓練
 
 # ------------------------------------------------------------------------------
 # 實驗追蹤設定 (Experiment Tracking)

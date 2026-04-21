@@ -50,6 +50,14 @@ src/pdf_to_image2.py -> src/image_preprocessing_batch_multiprocess2.py -> src/sp
 tmux new
 ```
 
+```bash
+tmux attach -t 0
+```
+
+```bash
+docker exec -ti engineering_image_retrieval_system_dev bash
+```
+
 1. 訓練
 
 ```bash

@@ -357,7 +357,8 @@ def _find_position(
         if not any(_overlaps(box, p) for p in placed):
             return x, y
 
-    return rng.randint(0, max_y), rng.randint(0, max_x)
+    # 備案：若無法找到完全不重疊位置，隨機選取一個位置（保持回傳順序為 x, y）
+    return rng.randint(0, max_x), rng.randint(0, max_y)
 
 
 def _overlaps(

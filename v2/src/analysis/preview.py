@@ -23,13 +23,32 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib import font_manager
+
+# --- Matplotlib 中文字體設定 ---
+_FONT_PATH = Path(__file__).resolve().parents[2] / "NotoSansTC-VariableFont_wght.ttf"
+if not _FONT_PATH.exists():
+    _FONT_PATH = Path("v2/NotoSansTC-VariableFont_wght.ttf")
+
+if _FONT_PATH.exists():
+    try:
+        font_manager.fontManager.addfont(str(_FONT_PATH))
+        prop = font_manager.FontProperties(fname=str(_FONT_PATH))
+        matplotlib.rcParams["font.family"] = prop.get_name()
+        matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
+    except Exception as e:
+        from src.logger import get_logger
+        get_logger(__name__).warning("無法載入自訂字體 %s: %s", _FONT_PATH, e)
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import track
 from rich.table import Table
 
+from src.logger import get_logger
+
 console = Console()
+logger = get_logger(__name__)
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
@@ -62,10 +81,10 @@ class PreprocessingPreview:
         "padding": 2,
         "max_attempts": 400,
         "use_connected_components": True,
-        "use_topology_analysis": False,  # preview 關閉以加速
-        "remove_gifu_logo": False,
-        "logo_template_path": None,
-        "logo_mask_region": None,
+        "use_topology_analysis": True,  # preview 關閉以加速
+        "remove_gifu_logo": True,
+        "logo_template_path": "data/Gifu_logo.png",
+        "logo_mask_region": [0.7, 0.7, 0.9, 0.9],
     }
 
     def __init__(
@@ -100,7 +119,7 @@ class PreprocessingPreview:
         ]
 
         if not images:
-            console.print(f"[red]未在 {self.input_dir} 找到任何影像[/red]")
+            logger.error("未在 %s 找到任何影像", self.input_dir)
             return
 
         rng = random.Random(self.seed)
@@ -108,6 +127,7 @@ class PreprocessingPreview:
 
         self._print_header(len(images), len(samples))
 
+        logger.info("Generating previews for %d sampled images...", len(samples))
         saved: List[Path] = []
         for i, img_path in enumerate(
             track(samples, description="[cyan]生成預覽圖", console=console)
@@ -117,6 +137,7 @@ class PreprocessingPreview:
                 saved.append(out)
 
         self._print_footer(saved)
+        logger.info("Preprocessing preview finished. %d images saved to %s", len(saved), self.output_dir)
 
     # ------------------------------------------------------------------ #
     # Per-image pipeline
@@ -125,7 +146,7 @@ class PreprocessingPreview:
     def _preview_one(self, img_path: Path, idx: int) -> Optional[Path]:
         gray = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
         if gray is None:
-            console.print(f"  [red]無法讀取: {img_path.name}[/red]")
+            logger.warning("無法讀取影像: %s", img_path.name)
             return None
 
         stages: Dict[str, Any] = {}

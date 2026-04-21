@@ -78,14 +78,28 @@ def split_dataset(
     dst_train.mkdir(parents=True, exist_ok=True)
     dst_test.mkdir(parents=True, exist_ok=True)
 
-    # 偵測是否有類別子目錄
-    class_dirs = [d for d in src.iterdir() if d.is_dir()]
-    has_classes = bool(class_dirs)
+    # 偵測目錄結構
+    # 1. 檢查是否為平坦結構 (src/stem/arr_*.png)
+    root_stems = _discover_stems(src)
+    if root_stems:
+        logger.info("檢測到平坦結構 (無類別目錄)，共有 %d 個 stem", len(root_stems))
+        return _perform_split({"_": root_stems}, dst_train, dst_test, split_ratio, seed, use_hardlinks)
 
-    if has_classes:
-        return _stratified_split(src, dst_train, dst_test, split_ratio, seed, use_hardlinks)
-    else:
-        return _flat_split(src, dst_train, dst_test, split_ratio, seed, use_hardlinks)
+    # 2. 檢查是否為類別結構 (src/class/stem/arr_*.png)
+    class_dirs = sorted(d for d in src.iterdir() if d.is_dir())
+    class_to_stems = {}
+    for cd in class_dirs:
+        stems = _discover_stems(cd)
+        if stems:
+            class_to_stems[cd.name] = stems
+
+    if class_to_stems:
+        logger.info("檢測到類別結構，共有 %d 個類別", len(class_to_stems))
+        return _perform_split(class_to_stems, dst_train, dst_test, split_ratio, seed, use_hardlinks)
+
+    # 3. 若都沒找到，嘗試平坦分割模式 (向下相容)
+    logger.warning("未偵測到完整的 stem 結構，嘗試執行平坦檔案分割")
+    return _flat_split(src, dst_train, dst_test, split_ratio, seed, use_hardlinks)
 
 
 # ============================================================
@@ -93,28 +107,22 @@ def split_dataset(
 # ============================================================
 
 
-def _stratified_split(
-    src: Path,
+def _perform_split(
+    class_to_stems: Dict[str, List[Path]],
     dst_train: Path,
     dst_test: Path,
     split_ratio: float,
     seed: int,
     use_hardlinks: bool = False,
 ) -> Tuple[int, int]:
-    """以類別子目錄為基礎進行分層抽樣。"""
-    class_dirs = sorted(d for d in src.iterdir() if d.is_dir())
+    """核心分割邏輯：對已分類的 stems 進行分層抽樣。"""
     rng = random.Random(seed)
-
     total_train_stems = 0
     total_test_stems = 0
     copy_tasks: List[Tuple[Path, Path]] = []
 
-    for class_dir in track(class_dirs, description="[cyan]分割類別"):
-        class_name = class_dir.name
-        stems = _discover_stems(class_dir)
-
+    for class_name, stems in track(class_to_stems.items(), description="[cyan]分割資料"):
         if not stems:
-            logger.warning("類別 %s 無 stem 目錄，跳過", class_name)
             continue
 
         shuffled = stems[:]
@@ -123,59 +131,62 @@ def _stratified_split(
         train_stems = shuffled[:n_train]
         test_stems = shuffled[n_train:]
 
-        # 訓練集：所有 arr_* 變體（斷點恢復：目的地已有檔案則跳過）
+        # 決定目的地子路徑
+        # 如果 class_name 為 "_"，則直接存放在 dst 下 (不建立類別層級)
+        def _get_dst_dir(root: Path, class_lvl: str, stem_lvl: str) -> Path:
+            if class_lvl == "_":
+                return root / stem_lvl
+            return root / class_lvl / stem_lvl
+
+        # 訓練集：所有 arr_* 變體
         for stem_dir in train_stems:
-            dst_class = dst_train / class_name / stem_dir.name
-            if dst_class.exists() and any(dst_class.iterdir()):
+            target_dir = _get_dst_dir(dst_train, class_name, stem_dir.name)
+            if target_dir.exists() and any(target_dir.iterdir()):
                 continue
             variants = sorted(stem_dir.glob("arr_*.png"))
             if not variants:
                 variants = [p for p in stem_dir.iterdir()
                             if p.suffix.lower() in _IMG_EXTS]
-            dst_class.mkdir(parents=True, exist_ok=True)
+            target_dir.mkdir(parents=True, exist_ok=True)
             for v in variants:
-                dst = dst_class / v.name
+                dst = target_dir / v.name
                 if not dst.exists():
                     copy_tasks.append((v, dst))
 
-        # 測試集：每個 stem 取 arr_000.png（斷點恢復：目的地已有檔案則跳過）
+        # 測試集：每個 stem 取代表性影像 (arr_000.png)
         for stem_dir in test_stems:
-            dst_class = dst_test / class_name / stem_dir.name
-            if dst_class.exists() and any(dst_class.iterdir()):
+            target_dir = _get_dst_dir(dst_test, class_name, stem_dir.name)
+            if target_dir.exists() and any(target_dir.iterdir()):
                 continue
             arr_000 = stem_dir / "arr_000.png"
             if not arr_000.exists():
-                candidates = sorted(stem_dir.glob("arr_*.png"))
-                if not candidates:
-                    candidates = [p for p in stem_dir.iterdir()
-                                  if p.suffix.lower() in _IMG_EXTS]
+                candidates = sorted(stem_dir.glob("arr_*.png")) or [
+                    p for p in stem_dir.iterdir() if p.suffix.lower() in _IMG_EXTS
+                ]
                 if candidates:
                     arr_000 = candidates[0]
                 else:
                     continue
-            dst_class.mkdir(parents=True, exist_ok=True)
-            dst = dst_class / arr_000.name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dst = target_dir / arr_000.name
             if not dst.exists():
                 copy_tasks.append((arr_000, dst))
 
         total_train_stems += len(train_stems)
         total_test_stems += len(test_stems)
 
-        logger.info(
-            "  類別 %-30s train=%d stems, test=%d stems",
-            class_name,
-            len(train_stems),
-            len(test_stems),
-        )
+        if class_name != "_":
+            logger.info(
+                "  類別 %-30s train=%d stems, test=%d stems",
+                class_name, len(train_stems), len(test_stems),
+            )
 
     if copy_tasks:
         _parallel_copy(copy_tasks, use_hardlinks=use_hardlinks)
 
     logger.info(
         "分層分割完成 [%s]: train_stems=%d, test_stems=%d",
-        dst_train.parent.name,
-        total_train_stems,
-        total_test_stems,
+        dst_train.parent.name, total_train_stems, total_test_stems,
     )
     return total_train_stems, total_test_stems
 

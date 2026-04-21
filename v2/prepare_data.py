@@ -104,15 +104,17 @@ def main() -> None:
     t = timers.create("step_2_pdf_conversion")
     t.start()
 
-    from src.data.pdf_converter import convert_pdfs_to_images
-
-    convert_pdfs_to_images(
-        pdf_dir=d.raw_pdf_dir,
-        output_dir=d.converted_image_dir,
-        dpi=d.pdf_dpi,
-        max_workers=d.pdf_max_workers,
-        skip=d.skip_pdf_conversion,
-    )
+    if not d.skip_pdf_conversion:
+        from src.data.pdf_converter import convert_pdfs_to_images
+        convert_pdfs_to_images(
+            pdf_dir=d.raw_pdf_dir,
+            output_dir=d.converted_image_dir,
+            dpi=d.pdf_dpi,
+            max_workers=d.pdf_max_workers,
+            skip=d.skip_pdf_conversion,
+        )
+    else:
+        logger.info("跳過 PDF → Image 轉換 (skip_pdf_conversion=True)")
     t.stop()
 
     # ========================================================

@@ -30,6 +30,22 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib import font_manager
+
+# --- Matplotlib 中文字體設定 ---
+_FONT_PATH = Path(__file__).resolve().parents[2] / "NotoSansTC-VariableFont_wght.ttf"
+if not _FONT_PATH.exists():
+    _FONT_PATH = Path("v2/NotoSansTC-VariableFont_wght.ttf")
+
+if _FONT_PATH.exists():
+    try:
+        font_manager.fontManager.addfont(str(_FONT_PATH))
+        prop = font_manager.FontProperties(fname=str(_FONT_PATH))
+        matplotlib.rcParams["font.family"] = prop.get_name()
+        matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
+    except Exception as e:
+        from src.logger import get_logger
+        get_logger(__name__).warning("無法載入自訂字體 %s: %s", _FONT_PATH, e)
 
 from rich.columns import Columns
 from rich.console import Console
@@ -45,7 +61,10 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
+from src.logger import get_logger
+
 console = Console()
+logger = get_logger(__name__)
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 _STYLE = "seaborn-v0_8-whitegrid"
@@ -97,6 +116,7 @@ class EDAAnalyzer:
             )
         )
 
+        logger.info("Starting EDA on %d images in %s", len(images), self.data_dir)
         results: Dict = {}
 
         with Progress(
@@ -118,9 +138,11 @@ class EDAAnalyzer:
 
             for name, fn in steps:
                 progress.update(task, description=f"[bold]{name}")
+                logger.debug("Executing analysis step: %s", name)
                 results[name] = fn(images)
                 progress.advance(task)
 
+        logger.info("EDA completed. Saving results to %s", self.output_dir)
         self._save_results(results)
         self._print_summary(results)
         return results

@@ -39,6 +39,7 @@ def setup_logging(
     level: str = "INFO",
     log_file: Optional[str] = None,
     use_rich: bool = False,
+    force: bool = False,
 ) -> None:
     """配置根 Logger 的 Handler 與格式。
 
@@ -56,15 +57,20 @@ def setup_logging(
         ValueError: 當 ``level`` 不是合法的日誌等級時。
     """
     global _ROOT_CONFIGURED
-    if _ROOT_CONFIGURED:
+    if _ROOT_CONFIGURED and not force:
         return
-    _ROOT_CONFIGURED = True
 
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f"無效的日誌等級: {level!r}")
 
     root_logger = logging.getLogger()
+    
+    if force:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+    
+    _ROOT_CONFIGURED = True
     root_logger.setLevel(numeric_level)
 
     # --- Console Handler ---

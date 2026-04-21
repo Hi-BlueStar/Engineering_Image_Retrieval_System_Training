@@ -220,8 +220,8 @@ def _process_one(
 
     # --- Step 2: 連通元件 or 全圖拓撲 ---
     if cfg["use_connected_components"]:
-        binary = _binarize(gray)
-        crops = _extract_crops(
+        binary = binarize(gray)
+        crops = extract_crops(
             binary,
             cfg["top_n"],
             cfg["remove_largest"],
@@ -238,7 +238,7 @@ def _process_one(
 
         rng = random.Random(hash(img_path))
         for i in range(cfg["random_count"]):
-            canvas = _arrange(crops, h, w, cfg["max_attempts"], rng)
+            canvas = arrange_crops(crops, h, w, cfg["max_attempts"], rng)
             result = 255 - canvas
             cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), result)
 
@@ -255,7 +255,7 @@ def _process_one(
             cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), gray)
 
 
-def _binarize(gray: np.ndarray) -> np.ndarray:
+def binarize(gray: np.ndarray) -> np.ndarray:
     """Otsu 二值化；輸出白色=元件、黑色=背景。"""
     _, binary = cv2.threshold(
         gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
@@ -263,13 +263,23 @@ def _binarize(gray: np.ndarray) -> np.ndarray:
     return binary
 
 
-def _extract_crops(
+def discover_components(
     binary: np.ndarray,
     top_n: int,
     remove_largest: bool,
     padding: int,
-) -> List[np.ndarray]:
-    """提取連通元件裁切圖（白色=元件像素）。"""
+) -> List[dict]:
+    """偵測並提取連通元件及其詮釋資料。
+
+    Args:
+        binary: 二值化影像（白色為元件）。
+        top_n: 保留的大元件數。
+        remove_largest: 是否移除最大元件。
+        padding: 裁切邊界填充。
+
+    Returns:
+        List[dict]: 包含 'crop', 'bbox' (x1, y1, x2, y2), 'area' 的字典列表。
+    """
     h, w = binary.shape
     num_labels, _labels, stats, _ = cv2.connectedComponentsWithStats(
         binary, connectivity=8
@@ -289,8 +299,8 @@ def _extract_crops(
 
     components = components[:top_n]
 
-    crops: List[np.ndarray] = []
-    for label_idx, _ in components:
+    results: List[dict] = []
+    for label_idx, area in components:
         x = int(stats[label_idx, cv2.CC_STAT_LEFT])
         y = int(stats[label_idx, cv2.CC_STAT_TOP])
         cw = int(stats[label_idx, cv2.CC_STAT_WIDTH])
@@ -304,12 +314,27 @@ def _extract_crops(
         if x2 - x1 < 2 or y2 - y1 < 2:
             continue
 
-        crops.append(binary[y1:y2, x1:x2].copy())
+        results.append({
+            "crop": binary[y1:y2, x1:x2].copy(),
+            "bbox": (x1, y1, x2, y2),
+            "area": area,
+        })
 
-    return crops
+    return results
 
 
-def _arrange(
+def extract_crops(
+    binary: np.ndarray,
+    top_n: int,
+    remove_largest: bool,
+    padding: int,
+) -> List[np.ndarray]:
+    """提取連通元件裁切圖（白色=元件像素）。"""
+    comps = discover_components(binary, top_n, remove_largest, padding)
+    return [c["crop"] for c in comps]
+
+
+def arrange_crops(
     crops: List[np.ndarray],
     canvas_h: int,
     canvas_w: int,

@@ -9,26 +9,11 @@
 
 使用範例::
 
-    # EDA 分析
-    python v2/analyze_data.py eda \\
-        --data-dir data/converted_images \\
-        --output-dir outputs/eda \\
-        --sample-n 500 --cc-sample-n 200
+    # 使用預設設定檔執行 EDA
+    python v2/analyze_data.py eda --config v2/configs/default.yaml
 
-    # 前處理預覽（使用預設參數）
-    python v2/analyze_data.py preview \\
-        --data-dir data/converted_images \\
-        --n-samples 5 \\
-        --output-dir outputs/preview
-
-    # 前處理預覽（自訂參數）
-    python v2/analyze_data.py preview \\
-        --data-dir data/converted_images \\
-        --n-samples 8 \\
-        --top-n 3 \\
-        --no-remove-largest \\
-        --no-topology
-
+    # 覆寫資料目錄執行預覽
+    python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
 ============================================================
 """
 
@@ -37,6 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 # 確保 v2/ 目錄的 src 套件可正常 import
 _HERE = Path(__file__).resolve().parent
@@ -46,6 +32,7 @@ if str(_HERE) not in sys.path:
 from rich.console import Console
 from rich.panel import Panel
 
+from src.config import AppConfig
 from src.logger import setup_logging, get_logger
 
 console = Console()
@@ -56,15 +43,19 @@ logger = get_logger(__name__)
 # Sub-command: eda
 # ============================================================
 
-def cmd_eda(args: argparse.Namespace) -> None:
+def cmd_eda(args: argparse.Namespace, cfg: AppConfig) -> None:
     from src.analysis.eda import EDAAnalyzer
 
+    # 優先序: CLI 參數 > Config 檔案
+    data_dir = args.data_dir or cfg.data.converted_image_dir
+    output_dir = args.output_dir or str(Path(cfg.experiment.output_dir) / "eda")
+
     analyzer = EDAAnalyzer(
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
+        data_dir=data_dir,
+        output_dir=output_dir,
         sample_n=args.sample_n,
         cc_sample_n=args.cc_sample_n,
-        seed=args.seed,
+        seed=cfg.data.base_seed,
     )
     analyzer.run_all()
 
@@ -73,28 +64,34 @@ def cmd_eda(args: argparse.Namespace) -> None:
 # Sub-command: preview
 # ============================================================
 
-def cmd_preview(args: argparse.Namespace) -> None:
+def cmd_preview(args: argparse.Namespace, cfg: AppConfig) -> None:
     from src.analysis.preview import PreprocessingPreview
 
-    # 從 CLI 參數組裝 params 字典
+    # 優先序: CLI 參數 > Config 檔案
+    data_dir = args.data_dir or cfg.data.converted_image_dir
+    output_dir = args.output_dir or str(Path(cfg.experiment.output_dir) / "preview")
+
+    # 使用 Config 中的前處理參數
+    d = cfg.data
     params = {
-        "top_n": args.top_n,
-        "remove_largest": args.remove_largest,
-        "padding": args.padding,
-        "max_attempts": args.max_attempts,
-        "use_connected_components": args.use_cc,
-        "use_topology_analysis": args.use_topology,
-        "remove_gifu_logo": args.remove_logo,
-        "logo_template_path": args.logo_template,
-        "logo_mask_region": None,
+        "top_n": d.preprocess_top_n,
+        "remove_largest": d.preprocess_remove_largest,
+        "padding": d.preprocess_padding,
+        "max_attempts": d.preprocess_max_attempts,
+        "use_connected_components": d.use_connected_components,
+        "use_topology_analysis": d.use_topology_analysis,
+        "remove_gifu_logo": d.remove_gifu_logo,
+        "logo_template_path": d.logo_template_path,
+        "logo_mask_region": d.logo_mask_region,
     }
 
     preview = PreprocessingPreview(
-        input_dir=args.data_dir,
+        input_dir=data_dir,
         n_samples=args.n_samples,
-        output_dir=args.output_dir,
+        image_ids=args.image_ids,
+        output_dir=output_dir,
         params=params,
-        seed=args.seed,
+        seed=d.base_seed,
         figure_dpi=args.dpi,
     )
     preview.run()
@@ -110,46 +107,31 @@ def build_parser() -> argparse.ArgumentParser:
         description="SimSiam v2 — 資料分析工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    # 全域參數
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="v2/configs/default.yaml",
+        help="YAML 設定檔路徑 (預設: v2/configs/default.yaml)",
+    )
 
-    # ---- Global Logging arguments ----
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="日誌等級 (預設: INFO)")
-    parser.add_argument("--log-file", default=None, help="日誌檔案路徑")
+    sub = parser.add_subparsers(dest="command", required=True)
 
     # ---- eda ----
     p_eda = sub.add_parser("eda", help="深度探索性資料分析 (EDA)")
-    p_eda.add_argument("--data-dir", required=True, help="影像來源目錄（支援類別子目錄）")
-    p_eda.add_argument("--output-dir", default="outputs/eda", help="分析結果輸出目錄")
+    p_eda.add_argument("--data-dir", help="影像來源目錄 (預設使用 config.data.converted_image_dir)")
+    p_eda.add_argument("--output-dir", help="分析結果輸出目錄 (預設使用 outputs/eda)")
     p_eda.add_argument("--sample-n", type=int, default=500, help="像素強度分析取樣數")
     p_eda.add_argument("--cc-sample-n", type=int, default=200, help="CC 分析取樣數")
-    p_eda.add_argument("--seed", type=int, default=42, help="隨機種子")
     p_eda.set_defaults(func=cmd_eda)
 
     # ---- preview ----
     p_prev = sub.add_parser("preview", help="前處理管線視覺化預覽")
-    p_prev.add_argument("--data-dir", required=True, help="原始影像目錄")
+    p_prev.add_argument("--data-dir", help="原始影像目錄 (預設使用 config.data.converted_image_dir)")
     p_prev.add_argument("--n-samples", type=int, default=5, help="隨機抽取影像數")
-    p_prev.add_argument("--output-dir", default="outputs/preview", help="預覽圖輸出目錄")
-    p_prev.add_argument("--seed", type=int, default=42, help="隨機種子")
+    p_prev.add_argument("--image-ids", nargs="+", help="指定影像 ID (檔案名稱，不含副檔名) 列表")
+    p_prev.add_argument("--output-dir", help="預覽圖輸出目錄 (預設使用 outputs/preview)")
     p_prev.add_argument("--dpi", type=int, default=150, help="輸出圖片 DPI")
-
-    # 前處理參數
-    p_prev.add_argument("--top-n", type=int, default=5, help="保留 CC 數量上限")
-    p_prev.add_argument("--no-remove-largest", dest="remove_largest", action="store_false",
-                        help="不移除最大元件（圖框）")
-    p_prev.set_defaults(remove_largest=True)
-    p_prev.add_argument("--padding", type=int, default=2, help="CC 裁切邊距（像素）")
-    p_prev.add_argument("--max-attempts", type=int, default=400, help="隨機排列嘗試次數")
-    p_prev.add_argument("--no-cc", dest="use_cc", action="store_false",
-                        help="關閉連通元件分析")
-    p_prev.set_defaults(use_cc=True)
-    p_prev.add_argument("--no-topology", dest="use_topology", action="store_false",
-                        help="關閉拓撲感知排序")
-    p_prev.set_defaults(use_topology=False)
-    p_prev.add_argument("--remove-logo", dest="remove_logo", action="store_true",
-                        help="啟用 Logo 移除")
-    p_prev.set_defaults(remove_logo=False)
-    p_prev.add_argument("--logo-template", default=None, help="Logo 模板圖片路徑")
     p_prev.set_defaults(func=cmd_preview)
 
     return parser
@@ -160,21 +142,51 @@ def build_parser() -> argparse.ArgumentParser:
 # ============================================================
 
 def main() -> None:
+    # --- 1. 解析命令列 (抽取出 --config 與 overrides) ---
+    parser = build_parser()
+    args, overrides = parser.parse_known_args()
+
+    # 處理誤放在子命令後的 --config (argparse 子解析器限制)
+    if "--config" in overrides:
+        idx = overrides.index("--config")
+        if idx + 1 < len(overrides):
+            args.config = overrides[idx + 1]
+            logger.debug("從未知參數中擷取到 --config: %s", args.config)
+
+    # 過濾出真正的 dotlist 覆寫 (必須包含 '=' 且不以 '-' 開頭)
+    dotlist_overrides = [o for o in overrides if "=" in o and not o.startswith("-")]
+    
+    # --- 2. 載入設定 ---
+    try:
+        cfg = AppConfig.from_yaml(args.config, cli_overrides=dotlist_overrides)
+        cfg.validate()
+    except Exception as e:
+        console.print(f"[bold red]載入設定失敗:[/bold red] {e}")
+        sys.exit(1)
+
+    # --- 3. 初始化日誌 (依循 prepare_data.py 模式) ---
+    setup_logging(
+        level=cfg.logging.level,
+        log_file=(
+            str(Path(cfg.experiment.output_dir) / "analyze_data.log")
+            if cfg.logging.log_to_file
+            else None
+        ),
+        use_rich=cfg.logging.use_rich,
+        force=True,
+    )
+
     console.print(
         Panel(
-            "[bold]SimSiam v2 — Data Analysis Toolkit[/bold]\n"
-            "Commands: [cyan]eda[/cyan] | [cyan]preview[/cyan]",
+            f"[bold]SimSiam v2 — Data Analysis Toolkit[/bold]\n"
+            f"Command: [cyan]{args.command}[/cyan] | Config: [cyan]{args.config}[/cyan]",
             border_style="blue",
         )
     )
-    parser = build_parser()
-    args = parser.parse_args()
-
-    # 初始化日誌 (使用 force=True 以確保 CLI 參數覆蓋模組匯入時的預設配置)
-    setup_logging(level=args.log_level, log_file=args.log_file, use_rich=True, force=True)
-
     logger.info("Starting SimSiam v2 Data Analysis Toolkit")
-    args.func(args)
+    
+    # 執行子命令 (傳入 args 與 cfg)
+    args.func(args, cfg)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,10 @@ from rich.panel import Panel
 from rich.progress import track
 from rich.table import Table
 
+from src.config import AppConfig
+from src.data.logo_removal import remove_logo
+from src.data.preprocessing import binarize, discover_components, arrange_crops
+from src.data.topology import sort_crops_by_topology
 from src.logger import get_logger
 
 console = Console()
@@ -74,23 +78,11 @@ class PreprocessingPreview:
         figure_dpi: 輸出圖片 DPI。
     """
 
-    # 預設前處理參數（對應 PreprocessConfig 欄位）
-    DEFAULT_PARAMS: Dict[str, Any] = {
-        "top_n": 5,
-        "remove_largest": True,
-        "padding": 2,
-        "max_attempts": 400,
-        "use_connected_components": True,
-        "use_topology_analysis": True,  # preview 關閉以加速
-        "remove_gifu_logo": True,
-        "logo_template_path": "data/Gifu_logo.png",
-        "logo_mask_region": [0.7, 0.7, 0.9, 0.9],
-    }
-
     def __init__(
         self,
         input_dir: str,
         n_samples: int = 5,
+        image_ids: Optional[List[str]] = None,
         output_dir: str = "outputs/preview",
         params: Optional[Dict[str, Any]] = None,
         seed: int = 42,
@@ -98,14 +90,14 @@ class PreprocessingPreview:
     ) -> None:
         self.input_dir = Path(input_dir)
         self.n_samples = n_samples
+        self.image_ids = image_ids
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.seed = seed
         self.figure_dpi = figure_dpi
 
-        self.params = dict(self.DEFAULT_PARAMS)
-        if params:
-            self.params.update(params)
+        # params 由外部傳入（通常在 analyze_data.py 中從 AppConfig 構建）
+        self.params = params or {}
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -123,9 +115,33 @@ class PreprocessingPreview:
             return
 
         rng = random.Random(self.seed)
-        samples = rng.sample(images, min(self.n_samples, len(images)))
+        
+        selected_ids: List[Path] = []
+        if self.image_ids:
+            selected_ids = [
+                img for img in images 
+                if img.stem in self.image_ids or img.name in self.image_ids
+            ]
+            
+            # 檢查是否有指定的 ID 沒被找到
+            found_ids = {img.stem for img in selected_ids} | {img.name for img in selected_ids}
+            missing_ids = set(self.image_ids) - found_ids
+            if missing_ids:
+                logger.warning("以下指定 ID 未找到對應影像: %s", missing_ids)
 
-        self._print_header(len(images), len(samples))
+        # 從剩餘影像中隨機取樣
+        remaining_images = [img for img in images if img not in selected_ids]
+        random_samples = []
+        if self.n_samples > 0 and remaining_images:
+            random_samples = rng.sample(remaining_images, min(self.n_samples, len(remaining_images)))
+
+        samples = selected_ids + random_samples
+
+        if not samples:
+            logger.warning("無任何影像可供預覽（指定 ID 未找到且未要求隨機取樣）")
+            return
+
+        self._print_header(len(images), len(samples), len(selected_ids), len(random_samples))
 
         logger.info("Generating previews for %d sampled images...", len(samples))
         saved: List[Path] = []
@@ -156,52 +172,57 @@ class PreprocessingPreview:
 
         # Stage 1: Logo removal
         current = gray.copy()
-        if self.params["remove_gifu_logo"]:
+        if self.params.get("remove_gifu_logo"):
             try:
-                from src.data.logo_removal import remove_logo
                 current = remove_logo(
                     current,
                     template_path=self.params.get("logo_template_path"),
                     mask_region=self.params.get("logo_mask_region"),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Logo removal failed for preview: %s", e)
         stages["logo_removed"] = current.copy()
 
         # Stage 2: Binarization (Otsu)
-        _, binary = cv2.threshold(
-            current, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-        )
+        binary = binarize(current)
         stages["binary"] = binary.copy()
 
         # Stage 3: CC detection visualisation
-        if self.params["use_connected_components"]:
-            cc_vis, crops, labels_info = self._extract_cc_vis(binary)
+        crops: List[np.ndarray] = []
+        labels_info: List[Dict] = []
+        
+        if self.params.get("use_connected_components"):
+            cc_vis, comps = self._extract_cc_vis(binary)
             stages["cc_detection"] = cc_vis
+            crops = [c["crop"] for c in comps]
+            
+            # Prepare labels for legend
+            for rank, c in enumerate(comps):
+                color_rgb = _CC_COLORS_RGB[rank % len(_CC_COLORS_RGB)]
+                labels_info.append({
+                    "rank": rank + 1,
+                    "area": c["area"],
+                    "color": tuple(channel / 255.0 for channel in color_rgb),
+                })
         else:
             stages["cc_detection"] = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
-            crops = []
-            labels_info = []
 
         # Stage 4: Final arrangement
         if crops:
-            from src.data.preprocessing import _arrange
             _rng = random.Random(self.seed + idx)
             h, w = gray.shape
 
-            if self.params["use_topology_analysis"]:
+            if self.params.get("use_topology_analysis"):
                 try:
-                    from src.data.topology import sort_crops_by_topology
                     crops = sort_crops_by_topology(crops)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Topology sorting failed for preview: %s", e)
 
-            canvas = _arrange(crops, h, w, self.params["max_attempts"], _rng)
+            canvas = arrange_crops(crops, h, w, self.params.get("max_attempts", 400), _rng)
             final = 255 - canvas
             stages["final"] = final
-        elif not self.params["use_connected_components"]:
-            stages["final"] = current
         else:
+            # Fallback for no CCs or no arrangement
             stages["final"] = current
 
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
@@ -215,51 +236,21 @@ class PreprocessingPreview:
     def _extract_cc_vis(
         self,
         binary: np.ndarray,
-    ) -> Tuple[np.ndarray, List[np.ndarray], List[Dict]]:
-        """Run CC analysis and return coloured visualisation + crops."""
-        h, w = binary.shape
-        top_n = self.params["top_n"]
-        remove_largest = self.params["remove_largest"]
-        padding = self.params["padding"]
-
-        num_labels, _labels, stats, _ = cv2.connectedComponentsWithStats(
-            binary, connectivity=8
+    ) -> Tuple[np.ndarray, List[dict]]:
+        """Run CC analysis using shared logic and return coloured visualisation + components info."""
+        comps = discover_components(
+            binary,
+            top_n=self.params.get("top_n", 5),
+            remove_largest=self.params.get("remove_largest", True),
+            padding=self.params.get("padding", 2),
         )
 
         vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
-        crops: List[np.ndarray] = []
-        labels_info: List[Dict] = []
-
-        if num_labels <= 1:
-            return vis, crops, labels_info
-
-        components = [
-            (i, int(stats[i, cv2.CC_STAT_AREA]))
-            for i in range(1, num_labels)
-        ]
-        components.sort(key=lambda x: x[1], reverse=True)
-
-        if remove_largest and len(components) > 1:
-            components = components[1:]
-
-        components = components[:top_n]
-
-        for rank, (label_idx, area) in enumerate(components):
-            x = int(stats[label_idx, cv2.CC_STAT_LEFT])
-            y = int(stats[label_idx, cv2.CC_STAT_TOP])
-            cw = int(stats[label_idx, cv2.CC_STAT_WIDTH])
-            ch = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
-
-            x1 = max(0, x - padding)
-            y1 = max(0, y - padding)
-            x2 = min(w, x + cw + padding)
-            y2 = min(h, y + ch + padding)
-
-            if x2 - x1 < 2 or y2 - y1 < 2:
-                continue
-
+        
+        for rank, c in enumerate(comps):
+            x1, y1, x2, y2 = c["bbox"]
             color_rgb = _CC_COLORS_RGB[rank % len(_CC_COLORS_RGB)]
-            color_bgr = _CC_COLORS_BGR[rank % len(_CC_COLORS_BGR)]
+            
             cv2.rectangle(vis, (x1, y1), (x2, y2), color_rgb, 2)
             cv2.putText(
                 vis,
@@ -272,15 +263,7 @@ class PreprocessingPreview:
                 cv2.LINE_AA,
             )
 
-            crops.append(binary[y1:y2, x1:x2].copy())
-            labels_info.append({
-                "rank": rank + 1,
-                "area": area,
-                "color": tuple(c / 255.0 for c in color_rgb),
-                "bbox": (x1, y1, x2, y2),
-            })
-
-        return vis, crops, labels_info
+        return vis, comps
 
     # ------------------------------------------------------------------ #
     # Figure generation
@@ -360,7 +343,7 @@ class PreprocessingPreview:
     # UI
     # ------------------------------------------------------------------ #
 
-    def _print_header(self, total_images: int, n_samples: int) -> None:
+    def _print_header(self, total_images: int, total_samples: int, n_specified: int = 0, n_random: int = 0) -> None:
         param_table = Table(show_header=False, box=None, padding=(0, 1))
         param_table.add_column("param", style="cyan")
         param_table.add_column("value", style="white")
@@ -368,12 +351,20 @@ class PreprocessingPreview:
             if v is not None:
                 param_table.add_row(k, str(v))
 
+        sample_info = []
+        if n_specified > 0:
+            sample_info.append(f"指定 ID: [yellow]{n_specified}[/yellow] 張")
+        if n_random > 0:
+            sample_info.append(f"隨機取樣: [yellow]{n_random}[/yellow] 張")
+        
+        info_str = " + ".join(sample_info) if sample_info else "無取樣"
+
         console.print(
             Panel(
                 f"[bold]輸入目錄:[/bold] [cyan]{self.input_dir}[/cyan]\n"
                 f"[bold]輸出目錄:[/bold] [cyan]{self.output_dir}[/cyan]\n"
                 f"[bold]總影像數:[/bold] [green]{total_images:,}[/green]  "
-                f"→  預覽 [yellow]{n_samples}[/yellow] 張\n\n"
+                f"→  預覽共 [yellow]{total_samples}[/yellow] 張 ({info_str})\n\n"
                 "[bold]前處理參數:[/bold]\n" + "\n".join(f"  {k} = {v}" for k, v in self.params.items() if v is not None),
                 title="[bold blue] 前處理管線預覽",
                 border_style="blue",

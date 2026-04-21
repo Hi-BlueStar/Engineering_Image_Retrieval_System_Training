@@ -40,7 +40,7 @@ data:
   use_topology_analysis: true # 拓撲感知元件排序（孔洞數）
   remove_gifu_logo: true # 移除 Gifu Logo
   logo_template_path: "data/Gifu_logo.png" # Logo 模板路徑（null=自動偵測角落）
-  logo_mask_region: [0.7, 0.7, 0.9, 0.9] # [x1_r, y1_r, x2_r, y2_r]（可選）
+  logo_mask_region: [0.75, 0.8, 1, 1] # [x1_r, y1_r, x2_r, y2_r]（可選）
 
   # --- 資料集分割 ---
   dataset_dir: "dataset"

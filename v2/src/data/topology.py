@@ -42,6 +42,60 @@ def count_holes(binary_component: np.ndarray) -> int:
     return int((hierarchy[0, :, 3] != -1).sum())
 
 
+def analyze_topology(binary_component: np.ndarray) -> dict:
+    """分析元件拓撲特徵。
+
+    Returns:
+        dict: {
+            "n_holes": int,
+            "is_complex": bool  # 是否具有孔洞
+        }
+    """
+    n_holes = count_holes(binary_component)
+    return {
+        "n_holes": n_holes,
+        "is_complex": n_holes > 0,
+    }
+
+
+def topology_preserving_pruning(
+    binary_component: np.ndarray, max_iters: int = 3, start_ksize: int = 2
+) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """結構級遞進式剪枝：執行微小清理，但確保不改變拓撲（孔洞數）。
+
+    Args:
+        binary_component: 二值化元件影像。
+        max_iters: 最大剪枝迭代次數。
+        start_ksize: 起始結構元素大小。
+        
+    Returns:
+        (最終結果, 歷史紀錄列表)
+    """
+    original_holes = count_holes(binary_component)
+    current = binary_component.copy()
+    history = []
+
+    for i in range(max_iters):
+        k_size = start_ksize + i
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
+        
+        # 執行形態學開運算 (去除邊緣雜訊)
+        pruned = cv2.morphologyEx(current, cv2.MORPH_OPEN, kernel)
+
+        # 驗證拓撲不變性（不允許孔洞消失或形狀破碎成多個）
+        # 同時要確保面積不為 0 (除非原本就是 0)
+        if pruned.sum() > 0 or current.sum() == 0:
+            if count_holes(pruned) == original_holes:
+                current = pruned
+                history.append(current.copy())
+            else:
+                break # 拓撲改變，終止迭代並保留上一次結果
+        else:
+            break # 面積歸零，終止迭代
+
+    return current, history
+
+
 def sort_crops_by_topology(
     crops: List[np.ndarray],
 ) -> List[np.ndarray]:

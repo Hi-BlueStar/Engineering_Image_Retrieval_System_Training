@@ -60,6 +60,10 @@ class DataConfig:
         preprocess_max_attempts: 隨機排列最大嘗試次數。
         preprocess_random_count: 每張影像的隨機排列變體數。
         preprocess_max_workers: 前處理並行程序數。
+        use_topology_pruning: 是否啟用拓撲分類與剪枝。
+        topology_pruning_iters: 結構級剪枝最大迭代次數。
+        topology_pruning_ksize: 結構級剪枝起始 Kernel 尺寸。
+        min_simple_area: 無孔洞元件的最小面積門檻（剪枝用）。
         skip_preprocessing: 是否跳過前處理。
         dataset_dir: 分割後資料集根目錄。
         split_ratio: 訓練集佔比。
@@ -95,6 +99,10 @@ class DataConfig:
     # --- 消融實驗：前處理旗標 ---
     use_connected_components: bool = True
     use_topology_analysis: bool = True
+    use_topology_pruning: bool = True
+    topology_pruning_iters: int = 3
+    topology_pruning_ksize: int = 2
+    min_simple_area: int = 40
     remove_gifu_logo: bool = True
     logo_template_path: Optional[str] = None
     logo_mask_region: Optional[List[float]] = None  # [x1_r, y1_r, x2_r, y2_r]

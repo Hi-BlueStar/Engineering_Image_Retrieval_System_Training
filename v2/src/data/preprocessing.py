@@ -61,6 +61,10 @@ class PreprocessConfig:
         random_count: 每張影像生成的排列變體數。
         use_connected_components: 是否啟用連通元件分析。
         use_topology_analysis: 是否啟用拓撲感知排序/遮罩。
+        use_topology_pruning: 是否啟用拓撲分類與剪枝。
+        topology_pruning_iters: 結構級剪枝最大迭代次數。
+        topology_pruning_ksize: 結構級剪枝起始 Kernel 尺寸。
+        min_simple_area: 無孔洞元件的最小面積門檻（剪枝用）。
         remove_gifu_logo: 是否移除 Gifu Logo。
         logo_template_path: Logo 模板路徑（可選）。
         logo_mask_region: Logo 遮罩區域比例（可選）。
@@ -76,6 +80,10 @@ class PreprocessConfig:
     random_count: int = 10
     use_connected_components: bool = True
     use_topology_analysis: bool = True
+    use_topology_pruning: bool = True
+    topology_pruning_iters: int = 3
+    topology_pruning_ksize: int = 2
+    min_simple_area: int = 40
     remove_gifu_logo: bool = True
     logo_template_path: Optional[str] = None
     logo_mask_region: Optional[List[float]] = None
@@ -125,6 +133,10 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
         "random_count": cfg.random_count,
         "use_connected_components": cfg.use_connected_components,
         "use_topology_analysis": cfg.use_topology_analysis,
+        "use_topology_pruning": cfg.use_topology_pruning,
+        "topology_pruning_iters": cfg.topology_pruning_iters,
+        "topology_pruning_ksize": cfg.topology_pruning_ksize,
+        "min_simple_area": cfg.min_simple_area,
         "remove_gifu_logo": cfg.remove_gifu_logo,
         "logo_template_path": cfg.logo_template_path,
         "logo_mask_region": cfg.logo_mask_region,
@@ -189,7 +201,12 @@ def _process_one(
     """處理單張影像：前處理 → 生成 random_count 個變體。"""
     cv2.setNumThreads(0)
     from src.data.logo_removal import remove_logo
-    from src.data.topology import sort_crops_by_topology, topology_guided_mask
+    from src.data.topology import (
+        analyze_topology,
+        sort_crops_by_topology,
+        topology_guided_mask,
+        topology_preserving_pruning,
+    )
 
     path = Path(img_path)
 
@@ -210,15 +227,7 @@ def _process_one(
     if gray is None:
         raise RuntimeError(f"無法讀取影像: {img_path}")
 
-    # --- Step 1: Logo 移除 ---
-    if cfg["remove_gifu_logo"]:
-        gray = remove_logo(
-            gray,
-            template_path=cfg.get("logo_template_path"),
-            mask_region=cfg.get("logo_mask_region"),
-        )
-
-    # --- Step 2: 連通元件 or 全圖拓撲 ---
+    # --- 連通元件 or 全圖拓撲 ---
     if cfg["use_connected_components"]:
         binary = binarize(gray)
         crops = extract_crops(
@@ -226,6 +235,13 @@ def _process_one(
             cfg["top_n"],
             cfg["remove_largest"],
             cfg["padding"],
+            remove_logo_cfg=cfg["remove_gifu_logo"],
+            logo_template_path=cfg.get("logo_template_path"),
+            logo_mask_region=cfg.get("logo_mask_region"),
+            use_topology_pruning=cfg.get("use_topology_pruning", True),
+            topology_pruning_iters=cfg.get("topology_pruning_iters", 3),
+            topology_pruning_ksize=cfg.get("topology_pruning_ksize", 2),
+            min_simple_area=cfg.get("min_simple_area", 40),
         )
         if not crops:
             return
@@ -244,6 +260,13 @@ def _process_one(
 
     else:
         # 無 CC：全圖處理
+        if cfg["remove_gifu_logo"]:
+            gray = remove_logo(
+                gray,
+                template_path=cfg.get("logo_template_path"),
+                mask_region=cfg.get("logo_mask_region"),
+            )
+
         if cfg["use_topology_analysis"]:
             gray = topology_guided_mask(gray)
 
@@ -268,6 +291,13 @@ def discover_components(
     top_n: int,
     remove_largest: bool,
     padding: int,
+    remove_logo_cfg: bool = False,
+    logo_template_path: Optional[str] = None,
+    logo_mask_region: Optional[List[float]] = None,
+    use_topology_pruning: bool = True,
+    topology_pruning_iters: int = 3,
+    topology_pruning_ksize: int = 2,
+    min_simple_area: int = 40,
 ) -> List[dict]:
     """偵測並提取連通元件及其詮釋資料。
 
@@ -276,23 +306,82 @@ def discover_components(
         top_n: 保留的大元件數。
         remove_largest: 是否移除最大元件。
         padding: 裁切邊界填充。
+        remove_logo_cfg: 是否在此階段移除 Logo。
+        logo_template_path: Logo 模板路徑。
+        logo_mask_region: Logo 遮罩區域。
 
     Returns:
-        List[dict]: 包含 'crop', 'bbox' (x1, y1, x2, y2), 'area' 的字典列表。
     """
     h, w = binary.shape
-    num_labels, _labels, stats, _ = cv2.connectedComponentsWithStats(
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary, connectivity=8
     )
 
     if num_labels <= 1:
         return []
 
-    components = [
-        (i, int(stats[i, cv2.CC_STAT_AREA]))
-        for i in range(1, num_labels)
-    ]
-    components.sort(key=lambda x: x[1], reverse=True)
+    # 1. 取得所有 Candidate 元件 (不含背景)
+    all_components = []
+    for i in range(1, num_labels):
+        pixel_area = int(stats[i, cv2.CC_STAT_AREA])
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        cw = int(stats[i, cv2.CC_STAT_WIDTH])
+        ch = int(stats[i, cv2.CC_STAT_HEIGHT])
+        bbox_area = cw * ch
+        all_components.append({
+            "idx": i,
+            "pixel_area": pixel_area,
+            "bbox_area": bbox_area,
+            "bbox": (x, y, x + cw, y + ch)
+        })
+
+    # 2. Logo 偵測與過濾 (延後到此處理)
+    filtered_indices = set()
+    if remove_logo_cfg:
+        from src.data.logo_removal import find_logo_regions
+        logo_boxes = find_logo_regions(
+            binary,
+            template_path=logo_template_path,
+            mask_region=logo_mask_region
+        )
+        
+        for comp in all_components:
+            cx1, cy1, cx2, cy2 = comp["bbox"]
+            # 判斷元件是否在 Logo 區域內 (IoU 或 包含關係)
+            for lx1, ly1, lx2, ly2 in logo_boxes:
+                # 簡單判定：元件 bounding box 中心點在 Logo 區域內
+                center_x, center_y = (cx1 + cx2) / 2, (cy1 + cy2) / 2
+                if lx1 <= center_x <= lx2 and ly1 <= center_y <= ly2:
+                    filtered_indices.add(comp["idx"])
+                    break
+        
+        if filtered_indices:
+            logger.debug("過濾掉 %d 個 Logo 元件", len(filtered_indices))
+
+    # 3. 拓撲分析與剪枝 (先分析拓撲，再做剪枝)
+    from src.data.topology import analyze_topology, topology_preserving_pruning
+
+    components = []
+    for comp in all_components:
+        if comp["idx"] in filtered_indices:
+            continue
+
+        # 計算拓撲 (針對該元件所在的 label 區域)
+        x1, y1, x2, y2 = comp["bbox"]
+        comp_crop = (labels[y1:y2, x1:x2] == comp["idx"]).astype(np.uint8) * 255
+        topo = analyze_topology(comp_crop)
+        comp.update(topo)
+
+        # 剪枝判斷：保留具有拓撲特徵者，或面積達標的簡單元件
+        if use_topology_pruning:
+            if not comp["is_complex"] and comp["pixel_area"] < min_simple_area:
+                continue
+
+        components.append(comp)
+
+    # 4. 排序與篩選 (依據 bbox 面積排序)
+    components.sort(key=lambda x: x["bbox_area"], reverse=True)
 
     if remove_largest and len(components) > 1:
         components = components[1:]
@@ -300,24 +389,39 @@ def discover_components(
     components = components[:top_n]
 
     results: List[dict] = []
-    for label_idx, area in components:
-        x = int(stats[label_idx, cv2.CC_STAT_LEFT])
-        y = int(stats[label_idx, cv2.CC_STAT_TOP])
-        cw = int(stats[label_idx, cv2.CC_STAT_WIDTH])
-        ch = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
+    for comp in components:
+        x1, y1, x2, y2 = comp["bbox"]
+        # 在輸出的 results 中，'area' 指的是用於排序的 bbox_area
+        area = comp["bbox_area"]
 
-        x1 = max(0, x - padding)
-        y1 = max(0, y - padding)
-        x2 = min(w, x + cw + padding)
-        y2 = min(h, y + ch + padding)
+        px1 = max(0, x1 - padding)
+        py1 = max(0, y1 - padding)
+        px2 = min(w, x2 + padding)
+        py2 = min(h, y2 + padding)
 
-        if x2 - x1 < 2 or y2 - y1 < 2:
+        if px2 - px1 < 2 or py2 - py1 < 2:
             continue
 
+        crop_labels = labels[py1:py2, px1:px2]
+        crop = (crop_labels == comp["idx"]).astype(np.uint8) * 255
+
+        # 結構級剪枝 (確保不改動拓撲結構)
+        history = []
+        if use_topology_pruning:
+            crop, history = topology_preserving_pruning(
+                crop, 
+                max_iters=topology_pruning_iters, 
+                start_ksize=topology_pruning_ksize
+            )
+
         results.append({
-            "crop": binary[y1:y2, x1:x2].copy(),
-            "bbox": (x1, y1, x2, y2),
+            "crop": crop,
+            "crop_history": history,
+            "bbox": (px1, py1, px2, py2),
             "area": area,
+            "pixel_area": comp["pixel_area"],
+            "is_complex": comp.get("is_complex", False),
+            "n_holes": comp.get("n_holes", 0),
         })
 
     return results
@@ -328,9 +432,28 @@ def extract_crops(
     top_n: int,
     remove_largest: bool,
     padding: int,
+    remove_logo_cfg: bool = False,
+    logo_template_path: Optional[str] = None,
+    logo_mask_region: Optional[List[float]] = None,
+    use_topology_pruning: bool = True,
+    topology_pruning_iters: int = 3,
+    topology_pruning_ksize: int = 2,
+    min_simple_area: int = 40,
 ) -> List[np.ndarray]:
     """提取連通元件裁切圖（白色=元件像素）。"""
-    comps = discover_components(binary, top_n, remove_largest, padding)
+    comps = discover_components(
+        binary,
+        top_n,
+        remove_largest,
+        padding,
+        remove_logo_cfg=remove_logo_cfg,
+        logo_template_path=logo_template_path,
+        logo_mask_region=logo_mask_region,
+        use_topology_pruning=use_topology_pruning,
+        topology_pruning_iters=topology_pruning_iters,
+        topology_pruning_ksize=topology_pruning_ksize,
+        min_simple_area=min_simple_area,
+    )
     return [c["crop"] for c in comps]
 
 
@@ -345,8 +468,12 @@ def arrange_crops(
     canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
     placed: List[Tuple[int, int, int, int]] = []
 
-    order = list(range(len(crops)))
-    rng.shuffle(order)
+    # 改為依面積降冪排序 (Largest First)
+    order = sorted(
+        range(len(crops)),
+        key=lambda i: crops[i].shape[0] * crops[i].shape[1],
+        reverse=True
+    )
 
     for idx in order:
         crop = crops[idx]
@@ -354,7 +481,12 @@ def arrange_crops(
         if ch > canvas_h or cw > canvas_w:
             continue
 
-        x, y = _find_position(canvas_h, canvas_w, ch, cw, placed, max_attempts, rng)
+        pos = _find_position(canvas_h, canvas_w, ch, cw, placed, max_attempts, rng)
+        if pos is None:
+            # 安全捨棄：若畫布已滿，跳過此元件，避免強制覆蓋
+            continue
+
+        x, y = pos
         canvas[y:y + ch, x:x + cw] = np.maximum(canvas[y:y + ch, x:x + cw], crop)
         placed.append((x, y, x + cw, y + ch))
 
@@ -369,11 +501,12 @@ def _find_position(
     placed: List[Tuple[int, int, int, int]],
     max_attempts: int,
     rng: random.Random,
-) -> Tuple[int, int]:
-    """找到不重疊的放置位置；超過嘗試上限則隨機回傳。"""
+) -> Optional[Tuple[int, int]]:
+    """找到不重疊的放置位置；先嘗試隨機猜測，失敗則進行網格搜尋。若皆找不到回傳 None。"""
     max_y = max(0, canvas_h - crop_h)
     max_x = max(0, canvas_w - crop_w)
 
+    # 1. 隨機搜尋 (保有資料增強的隨機性)
     for _ in range(max_attempts):
         y = rng.randint(0, max_y)
         x = rng.randint(0, max_x)
@@ -382,8 +515,16 @@ def _find_position(
         if not any(_overlaps(box, p) for p in placed):
             return x, y
 
-    # 備案：若無法找到完全不重疊位置，隨機選取一個位置（保持回傳順序為 x, y）
-    return rng.randint(0, max_x), rng.randint(0, max_y)
+    # 2. 全域網格掃描 (Systematic Fallback)
+    step = 10  # 步長設為 10 像素加速搜尋
+    for y in range(0, max_y + 1, step):
+        for x in range(0, max_x + 1, step):
+            box = (x, y, x + crop_w, y + crop_h)
+            if not any(_overlaps(box, p) for p in placed):
+                return x, y
+
+    # 若真的塞不下，回傳 None 啟動安全捨棄
+    return None
 
 
 def _overlaps(

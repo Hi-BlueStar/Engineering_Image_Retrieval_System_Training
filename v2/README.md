@@ -36,7 +36,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  Pipeline 1: 資料預處理 (prepare_data.py)                     │
 │                                                             │
-│  ZIP/RAR ─→ PDF→Image ─→ 連通元件分析 ─→ Train/Val 分割      │
+│  ZIP/RAR ─→ PDF→Image ─→ CC分析與拓撲剪枝 ─→ Train/Val 分割      │
 │  (多線程)    (多進程)      (多進程)        (分層隨機)           │
 └─────────────────────────────────────────────────────────────┘
                             ↓ 檔案系統（唯一契約）
@@ -61,7 +61,8 @@ v2/
 │   ├── data/                     # 資料處理模組
 │   │   ├── extraction.py         #   ZIP/RAR 解壓縮
 │   │   ├── pdf_converter.py      #   PDF→Image 多進程轉換
-│   │   ├── preprocessing.py      #   連通元件分析批次處理
+│   │   ├── preprocessing.py      #   連通元件分析與拓撲剪枝
+│   │   ├── topology.py           #   拓撲特徵計算與保拓撲剪枝
 │   │   └── splitter.py           #   資料集分割
 │   ├── dataset/                  # PyTorch Dataset & DataLoader
 │   │   ├── transforms.py         #   資料增強策略
@@ -210,6 +211,14 @@ outputs/simsiam_exp_20260419_143000/
 | 向量化損失 | `model/loss.py` | `F.normalize` + 廣播點積，無 Python 迴圈 |
 | `drop_last=True` | `dataset/dataloader.py` | 避免不完整 batch 導致 BatchNorm 異常 |
 
+### 4.3 拓撲感知預處理 (Topology-aware Preprocessing)
+
+| 功能 | 模組 | 說明 |
+| -------- | ------ | ------ |
+| 拓撲分類 | `data/topology.py` | 依據孔洞數 ($\beta_1$) 將元件分類為 Complex/Simple |
+| 拓撲剪枝 | `data/preprocessing.py` | 移除無孔洞的細小噪點，保留核心結構 |
+| 遞進式保拓撲清理 | `data/topology.py` | 遞增 Kernel 尺寸進行多次形態學清理，每次自動驗證拓撲不變性，實現最大化去噪 |
+
 ---
 
 ## 5. 函數與模組目錄 (API Reference)
@@ -246,7 +255,7 @@ extract_archive(archive_path, output_dir, skip=False) -> bool
 # PDF 轉換
 convert_pdfs_to_images(pdf_dir, output_dir, dpi=100, max_workers=None, skip=False) -> int
 
-# 影像前處理
+# 影像前處理 (包含 CC 分析、拓撲分類、Logo 移除與剪枝)
 preprocess_images(config: PreprocessConfig, skip=False) -> dict
 
 # 資料集分割

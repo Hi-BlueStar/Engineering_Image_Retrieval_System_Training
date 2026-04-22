@@ -87,6 +87,13 @@ class EDAAnalyzer:
         output_dir: str,
         sample_n: int = 500,
         cc_sample_n: int = 200,
+        remove_logo: bool = False,
+        logo_template_path: Optional[str] = None,
+        logo_mask_region: Optional[List[float]] = None,
+        use_topology_pruning: bool = True,
+        topology_pruning_iters: int = 3,
+        topology_pruning_ksize: int = 2,
+        min_simple_area: int = 40,
         seed: int = 42,
     ) -> None:
         self.data_dir = Path(data_dir)
@@ -94,6 +101,13 @@ class EDAAnalyzer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.sample_n = sample_n
         self.cc_sample_n = cc_sample_n
+        self.remove_logo = remove_logo
+        self.logo_template_path = logo_template_path
+        self.logo_mask_region = logo_mask_region
+        self.use_topology_pruning = use_topology_pruning
+        self.topology_pruning_iters = topology_pruning_iters
+        self.topology_pruning_ksize = topology_pruning_ksize
+        self.min_simple_area = min_simple_area
         self._rng = random.Random(seed)
         self._np_rng = np.random.default_rng(seed)
         self._all_images: Optional[List[Path]] = None
@@ -223,22 +237,31 @@ class EDAAnalyzer:
     def _run_cc_analysis(self, images: List[Path]) -> Dict:
         sample = images if len(images) <= self.cc_sample_n else self._rng.sample(images, self.cc_sample_n)
         cc_counts = []
+        from src.data.preprocessing import binarize, discover_components
 
         for p in sample:
             img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
             if img is None:
                 continue
-            _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            n_labels, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-            n_components = n_labels - 1  # exclude background
+            
+            binary = binarize(img)
+            
+            # 使用與 preprocessing.py 完全一致的實作
+            comps = discover_components(
+                binary,
+                top_n=999,  # 獲取全量連通元件以便分析分佈
+                remove_largest=True,
+                padding=0,
+                remove_logo_cfg=self.remove_logo,
+                logo_template_path=self.logo_template_path,
+                logo_mask_region=self.logo_mask_region,
+                use_topology_pruning=self.use_topology_pruning,
+                topology_pruning_iters=self.topology_pruning_iters,
+                topology_pruning_ksize=self.topology_pruning_ksize,
+                min_simple_area=self.min_simple_area,
+            )
 
-            # Exclude the largest (usually the border frame)
-            if n_components > 1:
-                areas = [int(stats[i, cv2.CC_STAT_AREA]) for i in range(1, n_labels)]
-                areas.sort(reverse=True)
-                n_components = len(areas) - 1  # after removing largest
-
-            cc_counts.append(max(0, n_components))
+            cc_counts.append(len(comps))
 
         if not cc_counts:
             return {}

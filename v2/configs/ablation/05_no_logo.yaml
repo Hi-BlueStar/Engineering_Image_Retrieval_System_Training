@@ -22,6 +22,10 @@ data:
   preprocess_max_workers: 12
   use_connected_components: true
   use_topology_analysis: true
+  use_topology_pruning: true
+  topology_pruning_iters: 3
+  topology_pruning_ksize: 2
+  min_simple_area: 40
   remove_gifu_logo: false
   skip_preprocessing: false
 

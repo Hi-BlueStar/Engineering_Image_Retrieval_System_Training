@@ -170,42 +170,68 @@ class PreprocessingPreview:
         # Stage 0: Original
         stages["original"] = gray.copy()
 
-        # Stage 1: Logo removal
-        current = gray.copy()
-        if self.params.get("remove_gifu_logo"):
-            try:
-                current = remove_logo(
-                    current,
-                    template_path=self.params.get("logo_template_path"),
-                    mask_region=self.params.get("logo_mask_region"),
-                )
-            except Exception as e:
-                logger.debug("Logo removal failed for preview: %s", e)
-        stages["logo_removed"] = current.copy()
-
-        # Stage 2: Binarization (Otsu)
-        binary = binarize(current)
+        # Stage 1: Binarization (Otsu)
+        binary = binarize(gray)
         stages["binary"] = binary.copy()
 
-        # Stage 3: CC detection visualisation
+        # Stage 2: CC and Logo filtering
         crops: List[np.ndarray] = []
         labels_info: List[Dict] = []
         
         if self.params.get("use_connected_components"):
-            cc_vis, comps = self._extract_cc_vis(binary)
+            cc_vis, comps_info = self._extract_cc_vis(binary)
             stages["cc_detection"] = cc_vis
-            crops = [c["crop"] for c in comps]
-            
-            # Prepare labels for legend
-            for rank, c in enumerate(comps):
+            crops = [c["crop"] for c in comps_info]
+            for rank, c in enumerate(comps_info):
                 color_rgb = _CC_COLORS_RGB[rank % len(_CC_COLORS_RGB)]
                 labels_info.append({
                     "rank": rank + 1,
                     "area": c["area"],
+                    "is_complex": c.get("is_complex", False),
+                    "n_holes": c.get("n_holes", 0),
                     "color": tuple(channel / 255.0 for channel in color_rgb),
                 })
+                
+            # 建立每次剪枝的預覽圖
+            if self.params.get("use_topology_pruning"):
+                max_history = 0
+                for c in comps_info:
+                    history = c.get("crop_history", [])
+                    max_history = max(max_history, len(history))
+                
+                h, w = gray.shape
+                for i in range(max_history):
+                    iter_canvas = np.zeros((h, w), dtype=np.uint8)
+                    for c in comps_info:
+                        hist = c.get("crop_history", [])
+                        crop_state = hist[i] if i < len(hist) else c["crop"]
+                        
+                        x1, y1, x2, y2 = c["bbox"]
+                        px1, py1 = max(0, x1), max(0, y1)
+                        px2, py2 = min(w, x2), min(h, y2)
+                        
+                        cw_start = 0 if x1 >= 0 else -x1
+                        ch_start = 0 if y1 >= 0 else -y1
+                        cw_end = cw_start + (px2 - px1)
+                        ch_end = ch_start + (py2 - py1)
+                        
+                        iter_canvas[py1:py2, px1:px2] = np.maximum(
+                            iter_canvas[py1:py2, px1:px2],
+                            crop_state[ch_start:ch_end, cw_start:cw_end]
+                        )
+                    
+                    stages[f"pruning_iter_{i+1}"] = iter_canvas
         else:
-            stages["cc_detection"] = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+            # Non-CC pipeline
+            current = gray.copy()
+            if self.params.get("remove_gifu_logo"):
+                current = remove_logo(
+                    current,
+                    template_path=self.params.get("logo_template_path"),
+                    mask_region=self.params.get("logo_mask_region"),
+                    fill_value=255,
+                )
+            stages["cc_detection"] = current
 
         # Stage 4: Final arrangement
         if crops:
@@ -223,6 +249,10 @@ class PreprocessingPreview:
             stages["final"] = final
         else:
             # Fallback for no CCs or no arrangement
+            current = stages["cc_detection"]
+            if self.params.get("use_topology_analysis"):
+                from src.data.topology import topology_guided_mask
+                current = topology_guided_mask(current)
             stages["final"] = current
 
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
@@ -243,6 +273,11 @@ class PreprocessingPreview:
             top_n=self.params.get("top_n", 5),
             remove_largest=self.params.get("remove_largest", True),
             padding=self.params.get("padding", 2),
+            remove_logo_cfg=self.params.get("remove_gifu_logo", False),
+            logo_template_path=self.params.get("logo_template_path"),
+            logo_mask_region=self.params.get("logo_mask_region"),
+            use_topology_pruning=self.params.get("use_topology_pruning", True),
+            min_simple_area=self.params.get("min_simple_area", 40),
         )
 
         vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
@@ -277,19 +312,29 @@ class PreprocessingPreview:
         out_path: Path,
     ) -> None:
         stage_labels = {
-            "original": "① 原始影像",
-            "logo_removed": "② Logo 移除後",
-            "binary": "③ 二值化遮罩",
-            "cc_detection": "④ CC 偵測結果",
-            "final": "⑤ 最終預處理變體",
+            "original": "原始影像",
+            "binary": "二值化遮罩",
+            "cc_detection": "CC 偵測 (含 Logo 過濾)",
+            "final": "最終預處理變體",
         }
+        for i in range(10):
+            stage_labels[f"pruning_iter_{i+1}"] = f"拓撲剪枝 Iter {i+1}"
 
         n = len(stages)
-        fig, axes = plt.subplots(1, n, figsize=(4 * n, 4.5))
+        # 動態計算排版：最多 4 行，超過則折行
+        cols = min(n, 4)
+        rows = (n + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4.5 * rows))
+        
+        # 確保 axes 是 1D array
         if n == 1:
-            axes = [axes]
+            axes_flat = [axes]
+        elif rows == 1 or cols == 1:
+            axes_flat = axes
+        else:
+            axes_flat = axes.flatten()
 
-        for ax, (key, img) in zip(axes, stages.items()):
+        for ax, (key, img) in zip(axes_flat[:n], stages.items()):
             if img is None:
                 ax.axis("off")
                 continue
@@ -307,25 +352,29 @@ class PreprocessingPreview:
                 patches = [
                     mpatches.Patch(
                         facecolor=info["color"],
-                        label=f"CC{info['rank']} (area={info['area']:,})",
+                        label=f"CC{info['rank']} (Holes:{info['n_holes']}, Area:{info['area']:,})",
                     )
                     for info in labels_info
                 ]
                 ax.legend(handles=patches, fontsize=6, loc="lower right", framealpha=0.7)
 
+        # 隱藏多餘的 axes
+        for ax in axes_flat[n:]:
+            ax.axis("off")
+
         fig.suptitle(
             f"{img_path.name}",
-            fontsize=10,
+            fontsize=12,
             fontweight="bold",
-            y=1.01,
+            y=1.02 if rows == 1 else 1.05,
         )
 
         # Parameter box
         param_lines = [
             f"top_n={self.params['top_n']}",
-            f"remove_largest={self.params['remove_largest']}",
             f"use_cc={self.params['use_connected_components']}",
             f"use_topo={self.params['use_topology_analysis']}",
+            f"use_pruning={self.params.get('use_topology_pruning', True)}",
         ]
         fig.text(
             0.01, -0.01,

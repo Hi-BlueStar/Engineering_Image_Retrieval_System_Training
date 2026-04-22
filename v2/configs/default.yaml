@@ -38,6 +38,10 @@ data:
   # --- 消融實驗前處理旗標 ---
   use_connected_components: true # 連通元件分析 + 隨機排列
   use_topology_analysis: true # 拓撲感知元件排序（孔洞數）
+  use_topology_pruning: true # 拓撲分類與剪枝
+  topology_pruning_iters: 10 # 遞進式剪枝最大迭代次數
+  topology_pruning_ksize: 2 # 遞進式剪枝起始 Kernel 尺寸
+  min_simple_area: 40 # 簡單元件（無孔洞）的最小面積門檻
   remove_gifu_logo: true # 移除 Gifu Logo
   logo_template_path: "data/Gifu_logo.png" # Logo 模板路徑（null=自動偵測角落）
   logo_mask_region: [0.75, 0.8, 1, 1] # [x1_r, y1_r, x2_r, y2_r]（可選）

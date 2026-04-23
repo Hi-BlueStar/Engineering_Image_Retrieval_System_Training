@@ -296,3 +296,7 @@ def _copy_flat(images: List[Path], dst_dir: Path, src_root: Path, use_hardlinks:
             tasks.append((img, dst))
     if tasks:
         _parallel_copy(tasks, use_hardlinks=use_hardlinks)
+        if not dst.exists():
+            tasks.append((img, dst))
+    if tasks:
+        _parallel_copy(tasks, use_hardlinks=use_hardlinks)

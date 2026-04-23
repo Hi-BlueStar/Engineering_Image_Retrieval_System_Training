@@ -17,8 +17,6 @@ data:
   preprocess_top_n: 5
   preprocess_remove_largest: true
   preprocess_padding: 2
-  preprocess_max_attempts: 400
-  preprocess_random_count: 10
   preprocess_max_workers: 12
   use_connected_components: true
   use_topology_analysis: false

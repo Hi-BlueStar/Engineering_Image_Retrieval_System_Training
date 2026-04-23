@@ -47,7 +47,7 @@ from rich.table import Table
 
 from src.config import AppConfig
 from src.data.logo_removal import remove_logo
-from src.data.preprocessing import binarize, discover_components, arrange_crops
+from src.data.preprocessing import binarize, discover_components
 from src.data.topology import sort_crops_by_topology
 from src.logger import get_logger
 
@@ -233,27 +233,48 @@ class PreprocessingPreview:
                 )
             stages["cc_detection"] = current
 
-        # Stage 4: Final arrangement
+        # Stage 4: Component Extraction
         if crops:
-            _rng = random.Random(self.seed + idx)
-            h, w = gray.shape
-
             if self.params.get("use_topology_analysis"):
                 try:
                     crops = sort_crops_by_topology(crops)
                 except Exception as e:
                     logger.debug("Topology sorting failed for preview: %s", e)
 
-            canvas = arrange_crops(crops, h, w, self.params.get("max_attempts", 400), _rng)
-            final = 255 - canvas
-            stages["final"] = final
+            pad = self.params.get("padding", 2)
+            for i, crop in enumerate(crops):
+                inv_crop = 255 - crop
+                padded_crop = cv2.copyMakeBorder(
+                    inv_crop, pad, pad, pad, pad, 
+                    cv2.BORDER_CONSTANT, value=255
+                )
+                stages[f"comp_{i+1}"] = padded_crop
         else:
-            # Fallback for no CCs or no arrangement
-            current = stages["cc_detection"]
+            # Fallback for no CCs
+            if self.params.get("use_connected_components"):
+                # CC 模式但沒找到元件：使用原始灰階影像（視需求移除 Logo）
+                current = gray.copy()
+                if self.params.get("remove_gifu_logo"):
+                    current = remove_logo(
+                        current,
+                        template_path=self.params.get("logo_template_path"),
+                        mask_region=self.params.get("logo_mask_region"),
+                        fill_value=255,
+                    )
+            else:
+                # 非 CC 模式：stages["cc_detection"] 已經是處理過的灰階影像
+                current = stages["cc_detection"]
+
             if self.params.get("use_topology_analysis"):
                 from src.data.topology import topology_guided_mask
                 current = topology_guided_mask(current)
-            stages["final"] = current
+                
+            pad = self.params.get("padding", 2)
+            padded_current = cv2.copyMakeBorder(
+                current, pad, pad, pad, pad, 
+                cv2.BORDER_CONSTANT, value=255
+            )
+            stages["full_image"] = padded_current
 
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
         self._generate_figure(img_path, stages, labels_info, out_path)
@@ -271,7 +292,7 @@ class PreprocessingPreview:
         comps = discover_components(
             binary,
             top_n=self.params.get("top_n", 5),
-            remove_largest=self.params.get("remove_largest", True),
+            max_bbox_ratio=self.params.get("max_bbox_ratio", 0.9),
             padding=self.params.get("padding", 2),
             remove_logo_cfg=self.params.get("remove_gifu_logo", False),
             logo_template_path=self.params.get("logo_template_path"),
@@ -315,10 +336,11 @@ class PreprocessingPreview:
             "original": "原始影像",
             "binary": "二值化遮罩",
             "cc_detection": "CC 偵測 (含 Logo 過濾)",
-            "final": "最終預處理變體",
+            "full_image": "最終完整影像 (含 Padding)",
         }
         for i in range(10):
             stage_labels[f"pruning_iter_{i+1}"] = f"拓撲剪枝 Iter {i+1}"
+            stage_labels[f"comp_{i+1}"] = f"元件 {i+1} (含 Padding)"
 
         n = len(stages)
         # 動態計算排版：最多 4 行，超過則折行

@@ -55,10 +55,9 @@ class PreprocessConfig:
         output_root: 前處理結果根目錄。
         max_workers: 並行程序數。
         top_n: 保留的最大元件數。
-        remove_largest: 是否移除面積最大的元件（通常為圖框）。
+        max_bbox_ratio: 排除大於整張圖一定比例的外階矩形元件（通常為圖框）。
         padding: 裁切邊距（像素）。
-        max_attempts: 隨機放置嘗試次數上限。
-        random_count: 每張影像生成的排列變體數。
+
         use_connected_components: 是否啟用連通元件分析。
         use_topology_analysis: 是否啟用拓撲感知排序/遮罩。
         use_topology_pruning: 是否啟用拓撲分類與剪枝。
@@ -74,10 +73,9 @@ class PreprocessConfig:
     output_root: str
     max_workers: int = 12
     top_n: int = 5
-    remove_largest: bool = True
+    max_bbox_ratio: float = 0.9
     padding: int = 2
-    max_attempts: int = 400
-    random_count: int = 10
+
     use_connected_components: bool = True
     use_topology_analysis: bool = True
     use_topology_pruning: bool = True
@@ -117,20 +115,18 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
         return
 
     logger.info(
-        "開始影像前處理: %d 張 | CC=%s | Topology=%s | LogoRemoval=%s | variants=%d",
+        "開始影像前處理: %d 張 | CC=%s | Topology=%s | LogoRemoval=%s",
         len(images),
         cfg.use_connected_components,
         cfg.use_topology_analysis,
         cfg.remove_gifu_logo,
-        cfg.random_count,
     )
 
     cfg_dict = {
         "top_n": cfg.top_n,
-        "remove_largest": cfg.remove_largest,
+        "max_bbox_ratio": cfg.max_bbox_ratio,
         "padding": cfg.padding,
-        "max_attempts": cfg.max_attempts,
-        "random_count": cfg.random_count,
+
         "use_connected_components": cfg.use_connected_components,
         "use_topology_analysis": cfg.use_topology_analysis,
         "use_topology_pruning": cfg.use_topology_pruning,
@@ -198,7 +194,7 @@ def _process_one(
     dst_root: str,
     cfg: dict,
 ) -> None:
-    """處理單張影像：前處理 → 生成 random_count 個變體。"""
+    """處理單張影像：前處理 → 生成獨立元件圖。"""
     cv2.setNumThreads(0)
     from src.data.logo_removal import remove_logo
     from src.data.topology import (
@@ -207,6 +203,7 @@ def _process_one(
         topology_guided_mask,
         topology_preserving_pruning,
     )
+
 
     path = Path(img_path)
 
@@ -218,9 +215,9 @@ def _process_one(
     except ValueError:
         class_part = Path(".")
 
-    # --- 斷點恢復：輸出已齊全則跳過（避免重複讀圖與運算）---
+    # --- 斷點恢復：輸出目錄已有圖則跳過（避免重複讀圖與運算）---
     out_dir = Path(dst_root) / class_part / path.stem
-    if out_dir.exists() and len(list(out_dir.glob("arr_*.png"))) >= cfg["random_count"]:
+    if out_dir.exists() and (list(out_dir.glob("comp_*.png")) or list(out_dir.glob("full_*.png"))):
         return None
 
     gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
@@ -233,7 +230,7 @@ def _process_one(
         crops = extract_crops(
             binary,
             cfg["top_n"],
-            cfg["remove_largest"],
+            cfg["max_bbox_ratio"],
             cfg["padding"],
             remove_logo_cfg=cfg["remove_gifu_logo"],
             logo_template_path=cfg.get("logo_template_path"),
@@ -252,11 +249,16 @@ def _process_one(
         h, w = gray.shape
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        rng = random.Random(hash(img_path))
-        for i in range(cfg["random_count"]):
-            canvas = arrange_crops(crops, h, w, cfg["max_attempts"], rng)
-            result = 255 - canvas
-            cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), result)
+        for i, crop in enumerate(crops):
+            # crop 預設是 255 為特徵，0 為背景。我們反轉為白底黑線
+            inv_crop = 255 - crop
+            # 加上純白邊框 padding
+            pad = cfg["padding"]
+            padded_crop = cv2.copyMakeBorder(
+                inv_crop, pad, pad, pad, pad, 
+                cv2.BORDER_CONSTANT, value=255
+            )
+            cv2.imwrite(str(out_dir / f"comp_{i:03d}.png"), padded_crop)
 
     else:
         # 無 CC：全圖處理
@@ -272,10 +274,13 @@ def _process_one(
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # 無 CC 時直接複製/儲存影像（仍生成 random_count 張以保持一致性）
-        rng = random.Random(hash(img_path))
-        for i in range(cfg["random_count"]):
-            cv2.imwrite(str(out_dir / f"arr_{i:03d}.png"), gray)
+        # 無 CC 時直接複製/儲存影像加上 padding
+        pad = cfg["padding"]
+        padded_gray = cv2.copyMakeBorder(
+            gray, pad, pad, pad, pad, 
+            cv2.BORDER_CONSTANT, value=255
+        )
+        cv2.imwrite(str(out_dir / f"full_000.png"), padded_gray)
 
 
 def binarize(gray: np.ndarray) -> np.ndarray:
@@ -289,7 +294,7 @@ def binarize(gray: np.ndarray) -> np.ndarray:
 def discover_components(
     binary: np.ndarray,
     top_n: int,
-    remove_largest: bool,
+    max_bbox_ratio: float,
     padding: int,
     remove_logo_cfg: bool = False,
     logo_template_path: Optional[str] = None,
@@ -304,7 +309,7 @@ def discover_components(
     Args:
         binary: 二值化影像（白色為元件）。
         top_n: 保留的大元件數。
-        remove_largest: 是否移除最大元件。
+        max_bbox_ratio: 排除大於整張圖一定比例的元件。
         padding: 裁切邊界填充。
         remove_logo_cfg: 是否在此階段移除 Logo。
         logo_template_path: Logo 模板路徑。
@@ -380,13 +385,20 @@ def discover_components(
 
         components.append(comp)
 
-    # 4. 排序與篩選 (依據 bbox 面積排序)
+    # 4. 排序與篩選 (依照 bbox 面積排序，並排除大於比例者)
     components.sort(key=lambda x: x["bbox_area"], reverse=True)
 
-    if remove_largest and len(components) > 1:
-        components = components[1:]
-
-    components = components[:top_n]
+    # 排除大於比例的元件 (通常是圖框)
+    total_area = h * w
+    filtered_components = []
+    for comp in components:
+        ratio = comp["bbox_area"] / total_area
+        if ratio > max_bbox_ratio:
+            logger.debug("排除超大元件: idx=%d, ratio=%.4f", comp["idx"], ratio)
+            continue
+        filtered_components.append(comp)
+    
+    components = filtered_components[:top_n]
 
     results: List[dict] = []
     for comp in components:
@@ -430,7 +442,7 @@ def discover_components(
 def extract_crops(
     binary: np.ndarray,
     top_n: int,
-    remove_largest: bool,
+    max_bbox_ratio: float,
     padding: int,
     remove_logo_cfg: bool = False,
     logo_template_path: Optional[str] = None,
@@ -444,7 +456,7 @@ def extract_crops(
     comps = discover_components(
         binary,
         top_n,
-        remove_largest,
+        max_bbox_ratio,
         padding,
         remove_logo_cfg=remove_logo_cfg,
         logo_template_path=logo_template_path,
@@ -457,78 +469,4 @@ def extract_crops(
     return [c["crop"] for c in comps]
 
 
-def arrange_crops(
-    crops: List[np.ndarray],
-    canvas_h: int,
-    canvas_w: int,
-    max_attempts: int,
-    rng: random.Random,
-) -> np.ndarray:
-    """將裁切圖隨機排列到黑色畫布（白色=元件）。"""
-    canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
-    placed: List[Tuple[int, int, int, int]] = []
 
-    # 改為依面積降冪排序 (Largest First)
-    order = sorted(
-        range(len(crops)),
-        key=lambda i: crops[i].shape[0] * crops[i].shape[1],
-        reverse=True
-    )
-
-    for idx in order:
-        crop = crops[idx]
-        ch, cw = crop.shape
-        if ch > canvas_h or cw > canvas_w:
-            continue
-
-        pos = _find_position(canvas_h, canvas_w, ch, cw, placed, max_attempts, rng)
-        if pos is None:
-            # 安全捨棄：若畫布已滿，跳過此元件，避免強制覆蓋
-            continue
-
-        x, y = pos
-        canvas[y:y + ch, x:x + cw] = np.maximum(canvas[y:y + ch, x:x + cw], crop)
-        placed.append((x, y, x + cw, y + ch))
-
-    return canvas
-
-
-def _find_position(
-    canvas_h: int,
-    canvas_w: int,
-    crop_h: int,
-    crop_w: int,
-    placed: List[Tuple[int, int, int, int]],
-    max_attempts: int,
-    rng: random.Random,
-) -> Optional[Tuple[int, int]]:
-    """找到不重疊的放置位置；先嘗試隨機猜測，失敗則進行網格搜尋。若皆找不到回傳 None。"""
-    max_y = max(0, canvas_h - crop_h)
-    max_x = max(0, canvas_w - crop_w)
-
-    # 1. 隨機搜尋 (保有資料增強的隨機性)
-    for _ in range(max_attempts):
-        y = rng.randint(0, max_y)
-        x = rng.randint(0, max_x)
-        box = (x, y, x + crop_w, y + crop_h)
-
-        if not any(_overlaps(box, p) for p in placed):
-            return x, y
-
-    # 2. 全域網格掃描 (Systematic Fallback)
-    step = 10  # 步長設為 10 像素加速搜尋
-    for y in range(0, max_y + 1, step):
-        for x in range(0, max_x + 1, step):
-            box = (x, y, x + crop_w, y + crop_h)
-            if not any(_overlaps(box, p) for p in placed):
-                return x, y
-
-    # 若真的塞不下，回傳 None 啟動安全捨棄
-    return None
-
-
-def _overlaps(
-    a: Tuple[int, int, int, int],
-    b: Tuple[int, int, int, int],
-) -> bool:
-    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])

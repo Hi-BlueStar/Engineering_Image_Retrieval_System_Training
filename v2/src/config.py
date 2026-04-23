@@ -55,10 +55,9 @@ class DataConfig:
         skip_pdf_conversion: 是否跳過 PDF 轉換。
         preprocessed_image_dir: 前處理輸出目錄。
         preprocess_top_n: 保留的大元件數。
-        preprocess_remove_largest: 是否移除最大元件。
+        preprocess_max_bbox_ratio: 排除大於整張圖一定比例的外接矩形元件（通常為圖框）。
         preprocess_padding: 元件裁切邊界填充。
-        preprocess_max_attempts: 隨機排列最大嘗試次數。
-        preprocess_random_count: 每張影像的隨機排列變體數。
+
         preprocess_max_workers: 前處理並行程序數。
         use_topology_pruning: 是否啟用拓撲分類與剪枝。
         topology_pruning_iters: 結構級剪枝最大迭代次數。
@@ -82,10 +81,9 @@ class DataConfig:
     skip_pdf_conversion: bool = False
     preprocessed_image_dir: str = "data/preprocessed_images"
     preprocess_top_n: int = 5
-    preprocess_remove_largest: bool = True
+    preprocess_max_bbox_ratio: float = 0.9
     preprocess_padding: int = 2
-    preprocess_max_attempts: int = 400
-    preprocess_random_count: int = 10
+
     preprocess_max_workers: int = 12
     skip_preprocessing: bool = False
     dataset_dir: str = "dataset"
@@ -301,6 +299,10 @@ class AppConfig:
         # --- Data ---
         if d.pdf_dpi <= 0:
             raise ValueError(f"data.pdf_dpi 必須為正整數，收到 {d.pdf_dpi}")
+        if not 0.0 < d.preprocess_max_bbox_ratio <= 1.0:
+            raise ValueError(
+                f"data.preprocess_max_bbox_ratio 必須在 (0, 1] 之間，收到 {d.preprocess_max_bbox_ratio}"
+            )
         if not 0.0 < d.split_ratio < 1.0:
             raise ValueError(
                 f"data.split_ratio 必須在 (0, 1) 之間，收到 {d.split_ratio}"

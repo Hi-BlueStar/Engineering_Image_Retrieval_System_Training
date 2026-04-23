@@ -14,7 +14,6 @@ data:
   skip_pdf_conversion: false
 
   preprocessed_image_dir: "data/preprocessed/03_no_cc"
-  preprocess_random_count: 10
   preprocess_max_workers: 12
   use_connected_components: false
   use_topology_analysis: true

@@ -82,9 +82,9 @@ def cmd_preview(args: argparse.Namespace, cfg: AppConfig) -> None:
     d = cfg.data
     params = {
         "top_n": d.preprocess_top_n,
-        "remove_largest": d.preprocess_remove_largest,
+        "max_bbox_ratio": d.preprocess_max_bbox_ratio,
         "padding": d.preprocess_padding,
-        "max_attempts": d.preprocess_max_attempts,
+
         "use_connected_components": d.use_connected_components,
         "use_topology_analysis": d.use_topology_analysis,
         "use_topology_pruning": d.use_topology_pruning,
@@ -201,4 +201,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()

@@ -19,7 +19,6 @@ data:
   topology_pruning_iters: 3
   topology_pruning_ksize: 2
   remove_gifu_logo: false
-  preprocess_random_count: 1
   skip_preprocessing: false
 
   dataset_dir: "dataset/01_baseline"

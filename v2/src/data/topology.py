@@ -132,8 +132,14 @@ def topology_guided_mask(gray: np.ndarray) -> np.ndarray:
     Returns:
         np.ndarray: 保留拓撲顯著區域的灰階影像 [H, W]。
     """
+    # 確保輸入為灰階（處理 preview.py 傳入 RGB 視覺化圖的情況）
+    if len(gray.shape) == 3:
+        gray_input = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_input = gray
+
     _, binary = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        gray_input, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
     contours, hierarchy = cv2.findContours(
         binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE

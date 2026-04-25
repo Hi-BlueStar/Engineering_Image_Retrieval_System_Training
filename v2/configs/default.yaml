@@ -17,7 +17,7 @@ data:
   # --- 壓縮檔設定 ---
   raw_zip_path: "data/PDF.zip" # 訓練用原始壓縮檔路徑
   labeled_zip_path: "data/吉輔提供資料.zip" # 評估用標註壓縮檔路徑
-  skip_extraction: true
+  skip_extraction: false
 
   # --- PDF 轉換 ---
   raw_pdf_dir: "data/raw_pdfs"
@@ -26,7 +26,7 @@ data:
   converted_labeled_image_dir: "data/converted_labeled_images"
   pdf_dpi: 400
   pdf_max_workers: 16
-  skip_pdf_conversion: true
+  skip_pdf_conversion: false
 
   # --- 影像前處理 ---
   preprocessed_image_dir: "data/preprocessed_images"
@@ -35,7 +35,7 @@ data:
   preprocess_min_bbox_area: 100000
   preprocess_padding: 2
   preprocess_max_workers: 12
-  skip_preprocessing: true
+  skip_preprocessing: false
 
   # --- 消融實驗前處理旗標 ---
   use_connected_components: true # 連通元件分析 + 隨機排列
@@ -79,7 +79,7 @@ model:
 training:
   img_size: 512
   epochs: 200
-  batch_size: 64
+  batch_size: 128
   lr: 2.0e-5
   weight_decay: 1.0e-5
   num_workers: 4 # GPU aug 模式下 workers 數可減少

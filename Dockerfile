@@ -53,12 +53,13 @@ RUN rm -f /etc/apt/apt.conf.d/docker-clean; \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    python3 python-is-python3 ca-certificates \
+    python3 python3-dev python-is-python3 ca-certificates \
     # GUI & OpenCV 必要庫
     libgl1 libglx-mesa0 libegl1 libglx0 libsm6 libxext6 libxrender1 \
     libglib2.0-0 \
     libgl1-mesa-glx \
-    # 工具與 SSH
+    # 工具、編譯器與 SSH
+    build-essential \
     openssh-server sudo libdbus-1-3 tmux curl git wget vim nano p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 

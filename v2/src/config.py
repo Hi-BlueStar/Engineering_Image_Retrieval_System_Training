@@ -74,16 +74,24 @@ class DataConfig:
 
     raw_zip_path: Optional[str] = None
     skip_extraction: bool = False
+    skip_labeled_extraction: bool = False
     raw_pdf_dir: str = "data/raw_pdfs"
     converted_image_dir: str = "data/converted_images"
+
+    labeled_zip_path: Optional[str] = None
+    raw_labeled_pdf_dir: str = "data/raw_labeled_pdfs"
+    converted_labeled_image_dir: str = "data/converted_labeled_images"
+
     pdf_dpi: int = 100
     pdf_max_workers: int = 16
     skip_pdf_conversion: bool = False
+    skip_labeled_pdf_conversion: bool = False
     preprocessed_image_dir: str = "data/preprocessed_images"
     preprocess_top_n: int = 5
     preprocess_max_bbox_ratio: float = 0.9
     preprocess_padding: int = 2
 
+    preprocess_min_bbox_area: int = 0
     preprocess_max_workers: int = 12
     skip_preprocessing: bool = False
     dataset_dir: str = "dataset"
@@ -106,7 +114,7 @@ class DataConfig:
     logo_mask_region: Optional[List[float]] = None  # [x1_r, y1_r, x2_r, y2_r]
 
     # --- 評估設定 ---
-    labeled_data_path: str = "data/converted_images"
+    labeled_data_path: str = "data/converted_labeled_images"
     test_split_ratio: float = 0.2
     eval_top_k_values: List[int] = field(default_factory=lambda: [1, 5, 10])
 
@@ -302,6 +310,10 @@ class AppConfig:
         if not 0.0 < d.preprocess_max_bbox_ratio <= 1.0:
             raise ValueError(
                 f"data.preprocess_max_bbox_ratio 必須在 (0, 1] 之間，收到 {d.preprocess_max_bbox_ratio}"
+            )
+        if d.preprocess_min_bbox_area < 0:
+            raise ValueError(
+                f"data.preprocess_min_bbox_area 必須 >= 0，收到 {d.preprocess_min_bbox_area}"
             )
         if not 0.0 < d.split_ratio < 1.0:
             raise ValueError(

@@ -21,10 +21,12 @@ import csv
 import json
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 import numpy as np
+from PIL import Image
 
 import matplotlib
 matplotlib.use("Agg")
@@ -57,6 +59,7 @@ from rich.progress import (
     SpinnerColumn,
     TextColumn,
     TimeRemainingColumn,
+    track,
 )
 from rich.table import Table
 from rich.text import Text
@@ -94,6 +97,8 @@ class EDAAnalyzer:
         topology_pruning_iters: int = 3,
         topology_pruning_ksize: int = 2,
         min_simple_area: int = 40,
+        min_bbox_area: int = 0,
+        max_workers: int = 4,
         seed: int = 42,
     ) -> None:
         self.data_dir = Path(data_dir)
@@ -108,6 +113,8 @@ class EDAAnalyzer:
         self.topology_pruning_iters = topology_pruning_iters
         self.topology_pruning_ksize = topology_pruning_ksize
         self.min_simple_area = min_simple_area
+        self.min_bbox_area = min_bbox_area
+        self.max_workers = max_workers
         self._rng = random.Random(seed)
         self._np_rng = np.random.default_rng(seed)
         self._all_images: Optional[List[Path]] = None
@@ -168,14 +175,15 @@ class EDAAnalyzer:
     def _run_size_analysis(self, images: List[Path]) -> Dict:
         widths, heights, ratios = [], [], []
 
-        for p in images:
-            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            h, w = img.shape
-            widths.append(w)
-            heights.append(h)
-            ratios.append(w / h if h > 0 else 1.0)
+        logger.info("分析影像尺寸 (並行數: %d)...", self.max_workers)
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(_get_image_size_worker, p) for p in images]
+            for future in track(as_completed(futures), total=len(images), description="尺寸分析", console=console):
+                w, h = future.result()
+                if w is not None and h is not None:
+                    widths.append(w)
+                    heights.append(h)
+                    ratios.append(w / h if h > 0 else 1.0)
 
         if not widths:
             return {}
@@ -207,14 +215,15 @@ class EDAAnalyzer:
         global_hist = np.zeros(256, dtype=np.int64)
         means, stds = [], []
 
-        for p in sample:
-            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            hist = cv2.calcHist([img], [0], None, [256], [0, 256]).flatten()
-            global_hist += hist.astype(np.int64)
-            means.append(float(np.mean(img)))
-            stds.append(float(np.std(img)))
+        logger.info("分析像素強度 (並行數: %d, 樣本數: %d)...", self.max_workers, len(sample))
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(_get_intensity_worker, p) for p in sample]
+            for future in track(as_completed(futures), total=len(sample), description="強度分析", console=console):
+                hist, m, s = future.result()
+                if hist is not None:
+                    global_hist += hist.astype(np.int64)
+                    means.append(m)
+                    stds.append(s)
 
         total_px = int(global_hist.sum())
         pct_dark = float(global_hist[:32].sum() / max(total_px, 1))
@@ -237,31 +246,29 @@ class EDAAnalyzer:
     def _run_cc_analysis(self, images: List[Path]) -> Dict:
         sample = images if len(images) <= self.cc_sample_n else self._rng.sample(images, self.cc_sample_n)
         cc_counts = []
-        from src.data.preprocessing import binarize, discover_components
+        
+        # 準備並行計算參數
+        cc_cfg = {
+            "top_n": 999,
+            "max_bbox_ratio": 0.9,
+            "min_bbox_area": self.min_bbox_area,
+            "padding": 0,
+            "remove_logo_cfg": self.remove_logo,
+            "logo_template_path": self.logo_template_path,
+            "logo_mask_region": self.logo_mask_region,
+            "use_topology_pruning": self.use_topology_pruning,
+            "topology_pruning_iters": self.topology_pruning_iters,
+            "topology_pruning_ksize": self.topology_pruning_ksize,
+            "min_simple_area": self.min_simple_area,
+        }
 
-        for p in sample:
-            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            
-            binary = binarize(img)
-            
-            # 使用與 preprocessing.py 完全一致的實作
-            comps = discover_components(
-                binary,
-                top_n=999,  # 獲取全量連通元件以便分析分佈
-                remove_largest=True,
-                padding=0,
-                remove_logo_cfg=self.remove_logo,
-                logo_template_path=self.logo_template_path,
-                logo_mask_region=self.logo_mask_region,
-                use_topology_pruning=self.use_topology_pruning,
-                topology_pruning_iters=self.topology_pruning_iters,
-                topology_pruning_ksize=self.topology_pruning_ksize,
-                min_simple_area=self.min_simple_area,
-            )
-
-            cc_counts.append(len(comps))
+        logger.info("分析連通元件統計 (並行數: %d, 樣本數: %d)...", self.max_workers, len(sample))
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(_get_cc_worker, p, cc_cfg) for p in sample]
+            for future in track(as_completed(futures), total=len(sample), description="CC 分析", console=console):
+                count = future.result()
+                if count is not None:
+                    cc_counts.append(count)
 
         if not cc_counts:
             return {}
@@ -582,3 +589,43 @@ class EDAAnalyzer:
                 if p.suffix.lower() in _IMG_EXTS
             ]
         return self._all_images
+
+
+# ============================================================
+# 並行工作函數 (Top-level Functions for Multiprocessing)
+# ============================================================
+
+def _get_image_size_worker(p: Path) -> Tuple[Optional[int], Optional[int]]:
+    """快速取得影像尺寸（僅讀取標頭）。"""
+    try:
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(p) as img:
+            return img.size  # (width, height)
+    except Exception:
+        return None, None
+
+
+def _get_intensity_worker(p: Path) -> Tuple[Optional[np.ndarray], float, float]:
+    """計算像素強度直方圖。"""
+    try:
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None, 0.0, 0.0
+        hist = cv2.calcHist([img], [0], None, [256], [0, 256]).flatten()
+        return hist, float(np.mean(img)), float(np.std(img))
+    except Exception:
+        return None, 0.0, 0.0
+
+
+def _get_cc_worker(p: Path, cfg: Dict[str, Any]) -> Optional[int]:
+    """執行連通元件分析並回傳數量。"""
+    try:
+        from src.data.preprocessing import binarize, discover_components
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        binary = binarize(img)
+        comps = discover_components(binary, **cfg)
+        return len(comps)
+    except Exception:
+        return None

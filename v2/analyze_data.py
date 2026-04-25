@@ -10,10 +10,10 @@
 使用範例::
 
     # 使用預設設定檔執行 EDA
-    python v2/analyze_data.py eda --config v2/configs/default.yaml
+    uv run python v2/analyze_data.py eda --config v2/configs/default.yaml
 
     # 覆寫資料目錄執行預覽
-    python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
+    uv run python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
 ============================================================
 """
 
@@ -62,6 +62,8 @@ def cmd_eda(args: argparse.Namespace, cfg: AppConfig) -> None:
         topology_pruning_iters=cfg.data.topology_pruning_iters,
         topology_pruning_ksize=cfg.data.topology_pruning_ksize,
         min_simple_area=cfg.data.min_simple_area,
+        min_bbox_area=cfg.data.preprocess_min_bbox_area,
+        max_workers=cfg.data.preprocess_max_workers,
         seed=cfg.data.base_seed,
     )
     analyzer.run_all()
@@ -94,6 +96,7 @@ def cmd_preview(args: argparse.Namespace, cfg: AppConfig) -> None:
         "remove_gifu_logo": d.remove_gifu_logo,
         "logo_template_path": d.logo_template_path,
         "logo_mask_region": d.logo_mask_region,
+        "min_bbox_area": d.preprocess_min_bbox_area,
     }
 
     preview = PreprocessingPreview(
@@ -201,5 +204,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
     main()

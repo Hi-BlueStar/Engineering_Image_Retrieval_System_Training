@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.backends.cudnn as cudnn
 
 # --- 確保專案根目錄在 Python Path ---
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -79,6 +80,7 @@ def _run_single_training(
     seed: int,
     tracker: ExperimentTracker,
     timers: TimerCollection,
+    labeled_ds: Optional[LabeledImageDataset] = None,
 ) -> dict:
     """執行單個 Run 的完整訓練流程。
 
@@ -130,6 +132,14 @@ def _run_single_training(
             pretrained=m.pretrained,
             in_channels=m.in_channels,
         ).to(device)
+
+        # --- torch.compile (PyTorch 2.0+) ---
+        if hasattr(torch, "compile") and device == "cuda":
+            try:
+                logger.info("使用 torch.compile 優化模型...")
+                model = torch.compile(model)
+            except Exception as e:
+                logger.warning("torch.compile 失敗: %s", e)
 
         # --- GPU Augmentation ---
         gpu_aug = None
@@ -200,19 +210,15 @@ def _run_single_training(
 
         # --- 評估 ---
         eval_metrics = {}
-        labeled_path = Path(d.labeled_data_path)
-        if labeled_path.exists():
+        if labeled_ds is not None:
             try:
-                labeled_ds = LabeledImageDataset(
-                    root=labeled_path,
-                    img_size=t.img_size,
-                    in_channels=m.in_channels,
-                )
                 eval_metrics = evaluate_model(
                     model=model,
                     labeled_dataset=labeled_ds,
                     device=device,
                     top_k_values=d.eval_top_k_values,
+                    batch_size=t.batch_size,
+                    num_workers=t.num_workers,
                 )
                 save_metrics(
                     eval_metrics,
@@ -299,10 +305,26 @@ def main() -> None:
         cfg.data.base_seed,
     )
 
+    # --- 預先載入評估資料集 (避免多 Run 重複掃描) ---
+    labeled_ds = None
+    labeled_path = Path(cfg.data.labeled_data_path)
+    if labeled_path.exists():
+        logger.info("正在初始化評估資料集: %s", labeled_path)
+        labeled_ds = LabeledImageDataset(
+            root=labeled_path,
+            img_size=cfg.training.img_size,
+            in_channels=cfg.model.in_channels,
+        )
+
+    # --- GPU 核心優化 ---
+    if torch.cuda.is_available():
+        cudnn.benchmark = True
+        logger.info("已啟用 cudnn.benchmark")
+
     run_results: list[dict] = []
     for run_idx in range(cfg.data.n_runs):
         seed = cfg.data.base_seed + run_idx
-        result = _run_single_training(cfg, run_idx, seed, tracker, timers)
+        result = _run_single_training(cfg, run_idx, seed, tracker, timers, labeled_ds)
         run_results.append(result)
 
     # --- 總結 ---

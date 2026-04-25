@@ -56,6 +56,7 @@ class PreprocessConfig:
         max_workers: 並行程序數。
         top_n: 保留的最大元件數。
         max_bbox_ratio: 排除大於整張圖一定比例的外階矩形元件（通常為圖框）。
+        min_bbox_area: 最小外接矩形面積門檻。
         padding: 裁切邊距（像素）。
 
         use_connected_components: 是否啟用連通元件分析。
@@ -74,6 +75,7 @@ class PreprocessConfig:
     max_workers: int = 12
     top_n: int = 5
     max_bbox_ratio: float = 0.9
+    min_bbox_area: int = 0
     padding: int = 2
 
     use_connected_components: bool = True
@@ -125,6 +127,7 @@ def preprocess_images(cfg: PreprocessConfig, skip: bool = False) -> None:
     cfg_dict = {
         "top_n": cfg.top_n,
         "max_bbox_ratio": cfg.max_bbox_ratio,
+        "min_bbox_area": cfg.min_bbox_area,
         "padding": cfg.padding,
 
         "use_connected_components": cfg.use_connected_components,
@@ -231,6 +234,7 @@ def _process_one(
             binary,
             cfg["top_n"],
             cfg["max_bbox_ratio"],
+            cfg["min_bbox_area"],
             cfg["padding"],
             remove_logo_cfg=cfg["remove_gifu_logo"],
             logo_template_path=cfg.get("logo_template_path"),
@@ -295,6 +299,7 @@ def discover_components(
     binary: np.ndarray,
     top_n: int,
     max_bbox_ratio: float,
+    min_bbox_area: int,
     padding: int,
     remove_logo_cfg: bool = False,
     logo_template_path: Optional[str] = None,
@@ -388,17 +393,28 @@ def discover_components(
     # 4. 排序與篩選 (依照 bbox 面積排序，並排除大於比例者)
     components.sort(key=lambda x: x["bbox_area"], reverse=True)
 
-    # 排除大於比例的元件 (通常是圖框)
+    # 排除大於比例的元件 (通常是圖框) 以及 小於最小面積的元件
     total_area = h * w
     filtered_components = []
     for comp in components:
+        # 1. 比例過濾 (圖框)
         ratio = comp["bbox_area"] / total_area
         if ratio > max_bbox_ratio:
             logger.debug("排除超大元件: idx=%d, ratio=%.4f", comp["idx"], ratio)
             continue
+        
+        # 2. 最小面積過濾
+        if comp["bbox_area"] < min_bbox_area:
+            logger.debug("排除過小元件: idx=%d, area=%d", comp["idx"], comp["bbox_area"])
+            continue
+            
         filtered_components.append(comp)
     
-    components = filtered_components[:top_n]
+    # 若有設定 top_n 則取前 n 個，否則取全部
+    if top_n > 0:
+        components = filtered_components[:top_n]
+    else:
+        components = filtered_components
 
     results: List[dict] = []
     for comp in components:
@@ -443,6 +459,7 @@ def extract_crops(
     binary: np.ndarray,
     top_n: int,
     max_bbox_ratio: float,
+    min_bbox_area: int,
     padding: int,
     remove_logo_cfg: bool = False,
     logo_template_path: Optional[str] = None,
@@ -457,6 +474,7 @@ def extract_crops(
         binary,
         top_n,
         max_bbox_ratio,
+        min_bbox_area,
         padding,
         remove_logo_cfg=remove_logo_cfg,
         logo_template_path=logo_template_path,

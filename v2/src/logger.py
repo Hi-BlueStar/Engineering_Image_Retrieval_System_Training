@@ -94,19 +94,23 @@ def setup_logging(
 
     # --- File Handler ---
     if log_file is not None:
-        file_path = Path(log_file)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            filename=str(file_path),
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=3,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(numeric_level)
-        file_handler.setFormatter(
-            logging.Formatter(fmt=_DEFAULT_FMT, datefmt=_DEFAULT_DATEFMT)
-        )
-        root_logger.addHandler(file_handler)
+        try:
+            file_path = Path(log_file)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                filename=str(file_path),
+                maxBytes=10 * 1024 * 1024,  # 10 MB
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(numeric_level)
+            file_handler.setFormatter(
+                logging.Formatter(fmt=_DEFAULT_FMT, datefmt=_DEFAULT_DATEFMT)
+            )
+            root_logger.addHandler(file_handler)
+        except Exception as e:
+            # Note: logging itself might not be fully ready, use print
+            print(f"Warning: Failed to setup log file {log_file}: {e}", file=sys.stderr)
 
     # --- 抑制第三方庫的噪音 ---
     for noisy in ("PIL", "matplotlib", "urllib3", "fitz"):

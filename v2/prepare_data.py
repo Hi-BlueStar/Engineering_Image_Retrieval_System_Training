@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.config import AppConfig
 from src.logger import get_logger, setup_logging
 from src.training.timer import TimerCollection
+from src.data.pdf_converter import convert_pdfs_to_images
 
 logger = get_logger(__name__)
 
@@ -87,11 +88,22 @@ def main() -> None:
 
     from src.data.extraction import extract_archive
 
+    # 1.1 解壓無標籤訓練資料
+    logger.info("解壓無標籤訓練資料...")
     extract_archive(
         archive_path=d.raw_zip_path,
         output_dir=d.raw_pdf_dir,
         skip=d.skip_extraction,
     )
+
+    # 1.2 解壓標註評估資料
+    if d.labeled_zip_path:
+        logger.info("解壓標註評估資料...")
+        extract_archive(
+            archive_path=d.labeled_zip_path,
+            output_dir=d.raw_labeled_pdf_dir,
+            skip=d.skip_labeled_extraction,
+        )
     t.stop()
 
     # ========================================================
@@ -104,17 +116,38 @@ def main() -> None:
     t = timers.create("step_2_pdf_conversion")
     t.start()
 
+    # 2.1 轉換無標籤 PDF (平鋪)
     if not d.skip_pdf_conversion:
-        from src.data.pdf_converter import convert_pdfs_to_images
+        logger.info("轉換無標籤 PDF...")
         convert_pdfs_to_images(
             pdf_dir=d.raw_pdf_dir,
             output_dir=d.converted_image_dir,
             dpi=d.pdf_dpi,
             max_workers=d.pdf_max_workers,
             skip=d.skip_pdf_conversion,
+            preserve_structure=False,
         )
     else:
-        logger.info("跳過 PDF → Image 轉換 (skip_pdf_conversion=True)")
+        logger.info("跳過無標籤 PDF 轉換 (skip_pdf_conversion=True)")
+
+    # 2.2 轉換標註 PDF (保留目錄結構)
+    logger.info("檢查標註 PDF 目錄: %s", d.raw_labeled_pdf_dir)
+    if Path(d.raw_labeled_pdf_dir).exists():
+        logger.info("標註 PDF 目錄存在")
+        if not d.skip_labeled_pdf_conversion:
+            logger.info("開始轉換標註 PDF (保留結構)...")
+            convert_pdfs_to_images(
+                pdf_dir=d.raw_labeled_pdf_dir,
+                output_dir=d.converted_labeled_image_dir,
+                dpi=d.pdf_dpi,
+                max_workers=d.pdf_max_workers,
+                skip=d.skip_labeled_pdf_conversion,
+                preserve_structure=True,
+            )
+        else:
+            logger.info("跳過標註 PDF 轉換 (skip_labeled_pdf_conversion=True)")
+    else:
+        logger.warning("標註 PDF 目錄不存在: %s", d.raw_labeled_pdf_dir)
     t.stop()
 
     # ========================================================
@@ -135,6 +168,7 @@ def main() -> None:
         max_workers=d.preprocess_max_workers,
         top_n=d.preprocess_top_n,
         max_bbox_ratio=d.preprocess_max_bbox_ratio,
+        min_bbox_area=d.preprocess_min_bbox_area,
         padding=d.preprocess_padding,
 
         use_connected_components=d.use_connected_components,

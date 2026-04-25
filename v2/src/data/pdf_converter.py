@@ -32,15 +32,17 @@ def convert_pdfs_to_images(
     dpi: int = 100,
     max_workers: int = 16,
     skip: bool = False,
+    preserve_structure: bool = False,
 ) -> None:
     """將目錄內所有 PDF 批次轉換為灰階 PNG。
 
     Args:
         pdf_dir: 包含 PDF 的來源目錄（遞迴搜尋）。
-        output_dir: PNG 輸出目錄（平鋪，不保留子目錄結構）。
+        output_dir: PNG 輸出目錄。
         dpi: 轉換解析度。
         max_workers: 執行緒並行數。
         skip: ``True`` 強制跳過此步驟。
+        preserve_structure: ``True`` 保留原始目錄結構；``False`` 平鋪輸出。
     """
     if skip:
         logger.info("跳過 PDF 轉換 (skip=True)")
@@ -61,9 +63,18 @@ def convert_pdfs_to_images(
         logger.warning("PDF 目錄中無 PDF 檔: %s", src_dir)
         return
 
-    logger.info("開始 PDF 轉換: %d 個 PDF，DPI=%d", len(pdf_files), dpi)
+    logger.info("開始 PDF 轉換: %d 個 PDF，DPI=%d, preserve_structure=%s", 
+                len(pdf_files), dpi, preserve_structure)
 
-    args = [(p, dst_dir, dpi) for p in pdf_files]
+    args = []
+    for p in pdf_files:
+        if preserve_structure:
+            rel_path = p.parent.relative_to(src_dir)
+            target_dst = dst_dir / rel_path
+            target_dst.mkdir(parents=True, exist_ok=True)
+        else:
+            target_dst = dst_dir
+        args.append((p, target_dst, dpi))
     success = 0
 
     with Progress(

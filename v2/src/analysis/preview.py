@@ -293,6 +293,7 @@ class PreprocessingPreview:
             binary,
             top_n=self.params.get("top_n", 5),
             max_bbox_ratio=self.params.get("max_bbox_ratio", 0.9),
+            min_bbox_area=self.params.get("min_bbox_area", 0),
             padding=self.params.get("padding", 2),
             remove_logo_cfg=self.params.get("remove_gifu_logo", False),
             logo_template_path=self.params.get("logo_template_path"),

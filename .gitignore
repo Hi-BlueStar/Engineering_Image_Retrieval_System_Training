@@ -11,6 +11,9 @@ wheels/
 # Virtual environments
 .venv
 
+.claude
+.agents
+
 # 檔案不須儲存（根目錄層級的資料/輸出目錄，加 / 前綴避免誤殺 src/data/ 等子目錄）
 chroma_db_store/
 chroma_db/

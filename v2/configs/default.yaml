@@ -60,7 +60,7 @@ data:
 
   # --- 評估設定 ---
   labeled_data_path: "data/converted_labeled_images" # 含類別子目錄的評估資料集
-  eval_top_k_values: [1, 5, 10]
+  eval_top_k_values: [1, 5, 10, 20, 40, 80]
 
 # ------------------------------------------------------------------------------
 # 模型設定 (Model Architecture)

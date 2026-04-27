@@ -122,5 +122,6 @@ def _make_seed_utils(seed: Optional[int]):
         worker_seed = seed + worker_id
         random.seed(worker_seed)
         np.random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
 
     return generator, worker_init

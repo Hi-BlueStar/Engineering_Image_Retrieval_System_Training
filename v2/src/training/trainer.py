@@ -95,6 +95,7 @@ class Trainer:
         loss_fn: Optional[Callable] = None,
         grad_clip: float = 0.0,
         gpu_aug: Optional[GPUAugmentation] = None,
+        max_batches: Optional[int] = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -105,6 +106,7 @@ class Trainer:
         self.loss_fn = loss_fn or simsiam_loss
         self.grad_clip = grad_clip
         self.gpu_aug = gpu_aug  # None → DataLoader 已提供 (v1, v2)
+        self.max_batches = max_batches
 
     def fit(
         self,
@@ -286,7 +288,9 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in loader:
+        for i, batch in enumerate(loader):
+            if self.max_batches is not None and i >= self.max_batches:
+                break
             if self.gpu_aug is not None:
                 # GPU 增強模式：batch = raw tensor [B, C, H, W]
                 raw = batch.to(self.device, non_blocking=True)
@@ -375,7 +379,9 @@ class Trainer:
             else contextlib.nullcontext()
         )
 
-        for batch in loader:
+        for i, batch in enumerate(loader):
+            if self.max_batches is not None and i >= self.max_batches:
+                break
             if self.gpu_aug is not None:
                 raw = batch.to(self.device, non_blocking=True)
                 v1, v2 = self.gpu_aug.create_views(raw)

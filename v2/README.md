@@ -145,6 +145,11 @@ sudo rm -rf data/converted_images data/preprocessed_images data/raw_pdfs dataset
 ```
 
 ```bash
+# 測試訓練流程：
+uv run python v2/train.py --config v2/configs/minimal_test.yaml
+```
+
+```bash
 # 完整流程：解壓 → PDF轉圖 → 前處理 → 分割
 uv run python v2/prepare_data.py --config v2/configs/default.yaml
 

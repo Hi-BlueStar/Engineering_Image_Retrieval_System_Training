@@ -1,0 +1,23 @@
+# 最小化測試配置檔 (Minimal Test Config)
+# 用於快速驗證管線有無語法或流程錯誤
+
+data:
+  n_runs: 1
+  base_seed: 42
+  # 此處繼承 default 的路徑，假設前處理已完成
+
+model:
+  backbone: "resnet18"
+
+training:
+  epochs: 2
+  batch_size: 4
+  num_workers: 0 # 避免多進程啟動開銷與潛在死鎖，方便除錯
+  resume: False # 避免受之前的 Checkpoint 影響
+  img_size: 256 # 縮小圖片加速測試
+  max_batches: 10 # 限制每 epoch 的 batch 數以快速完成測試
+
+experiment:
+  output_dir: "temp/outputs" # 隔離輸出
+  exp_name: "minimal_test"
+  save_freq: 1

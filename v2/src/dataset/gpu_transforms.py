@@ -36,6 +36,7 @@ logger = get_logger(__name__)
 
 try:
     import kornia.augmentation as K
+    import kornia.morphology as KM
     _KORNIA_AVAILABLE = True
 except ImportError:
     _KORNIA_AVAILABLE = False
@@ -43,6 +44,26 @@ except ImportError:
         "kornia 未安裝，GPU 增強將退化為 resize+normalize。"
         "建議安裝: pip install kornia"
     )
+
+
+class RandomGPUMorphology(nn.Module):
+    """GPU 隨機形態學增強 (膨脹/腐蝕)。"""
+
+    def __init__(self, p: float = 0.5, kernel_size: int = 3) -> None:
+        super().__init__()
+        self.p = p
+        self.kernel_size = kernel_size
+        self.register_buffer("kernel", torch.ones(kernel_size, kernel_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or torch.rand(1).item() > self.p:
+            return x
+
+        # 隨機選擇膨脹或腐蝕
+        if torch.rand(1).item() > 0.5:
+            return KM.dilation(x, self.kernel)
+        else:
+            return KM.erosion(x, self.kernel)
 
 
 class GPUAugmentation(nn.Module):
@@ -80,6 +101,7 @@ class GPUAugmentation(nn.Module):
 
         if self.use_augmentation:
             return K.AugmentationSequential(
+                # 1. 基礎幾何與縮放
                 K.RandomResizedCrop(
                     (self.img_size, self.img_size),
                     scale=(0.2, 1.0),
@@ -88,12 +110,53 @@ class GPUAugmentation(nn.Module):
                 ),
                 K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
                 K.RandomVerticalFlip(p=0.5, same_on_batch=False),
-                K.RandomRotation(degrees=30.0, p=0.5, same_on_batch=False),
+                
+                # 2. 結構變換 (對應 Pipeline 1 的兩次 RandomAffine)
+                K.RandomAffine(
+                    degrees=45.0,
+                    p=0.3,
+                    same_on_batch=False,
+                ),
+                K.RandomAffine(
+                    degrees=45.0,
+                    p=0.3,
+                    same_on_batch=False,
+                ),
+
+                # 3. 幾何變型 (彈性變換)
+                K.RandomElasticTransform(
+                    alpha=(50.0, 50.0),
+                    sigma=(5.0, 5.0),
+                    p=0.3,
+                    same_on_batch=False,
+                ),
+
+                # 4. 形態學擾動 (線條粗細)
+                RandomGPUMorphology(p=0.3, kernel_size=3),
+
+                # 5. 雜訊
+                K.RandomSaltAndPepperNoise(
+                    amount=(0.0, 0.02),
+                    p=0.2,
+                    same_on_batch=False,
+                ),
+
+                # 6. 顏色擾動
                 K.ColorJitter(
                     brightness=0.4, contrast=0.4,
                     p=0.8, same_on_batch=False,
                 ),
+
+                # 7. 正規化
                 K.Normalize(mean=mean, std=std),
+
+                # 8. 遮擋 (Cutout)
+                K.RandomErasing(
+                    scale=(0.02, 0.15),
+                    ratio=(0.3, 3.3),
+                    p=0.3,
+                    same_on_batch=False,
+                ),
                 data_keys=["input"],
             )
         else:

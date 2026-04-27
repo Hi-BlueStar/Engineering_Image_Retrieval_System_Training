@@ -6,8 +6,9 @@
 1. **分層抽樣 (Stratified)**（預設）：
    - 以「原始影像 stem」為單位進行分割
    - 確保各類別在 train/test 中的比例與原始資料一致
-   - 訓練集包含每個 stem 的所有 arr_* 變體
-   - 測試集每個 stem 只取 arr_000.png（代表性影像）
+   - 訓練集包含每個 stem 的所有衍生元件 (arr_*.png)
+   - 測試集同樣完整包含每個 stem 的所有衍生元件
+   - 防止資料洩漏：同一個 Stem 的元件不會同時出現在 train 與 test
 
 2. **平坦分割 (Flat)**：
    - 無類別子目錄時的向下相容模式
@@ -16,7 +17,7 @@
 輸出結構::
 
     <output_root>/<run_name>/Component_Dataset/train/<class>/<stem>/arr_*.png
-    <output_root>/<run_name>/Component_Dataset/test/<class>/<stem>/arr_000.png
+    <output_root>/<run_name>/Component_Dataset/test/<class>/<stem>/arr_*.png
 ============================================================
 """
 
@@ -153,24 +154,22 @@ def _perform_split(
                 if not dst.exists():
                     copy_tasks.append((v, dst))
 
-        # 測試集：每個 stem 取代表性影像 (arr_000.png)
+        # 測試集：同樣完整保留所有衍生元件
         for stem_dir in test_stems:
             target_dir = _get_dst_dir(dst_test, class_name, stem_dir.name)
             if target_dir.exists() and any(target_dir.iterdir()):
                 continue
-            arr_000 = stem_dir / "arr_000.png"
-            if not arr_000.exists():
-                candidates = sorted(stem_dir.glob("arr_*.png")) or [
-                    p for p in stem_dir.iterdir() if p.suffix.lower() in _IMG_EXTS
-                ]
-                if candidates:
-                    arr_000 = candidates[0]
-                else:
-                    continue
+            
+            variants = sorted(stem_dir.glob("arr_*.png"))
+            if not variants:
+                variants = [p for p in stem_dir.iterdir()
+                            if p.suffix.lower() in _IMG_EXTS]
+                            
             target_dir.mkdir(parents=True, exist_ok=True)
-            dst = target_dir / arr_000.name
-            if not dst.exists():
-                copy_tasks.append((arr_000, dst))
+            for v in variants:
+                dst = target_dir / v.name
+                if not dst.exists():
+                    copy_tasks.append((v, dst))
 
         total_train_stems += len(train_stems)
         total_test_stems += len(test_stems)

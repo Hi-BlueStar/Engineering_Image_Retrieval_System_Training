@@ -50,6 +50,9 @@ def evaluate_model(
     Returns:
         dict: 指標結果（IACS, Inter, Margin, Top-K）。
     """
+    if hasattr(model, "_orig_mod"):
+        model = model._orig_mod
+
     loader = DataLoader(
         labeled_dataset,
         batch_size=batch_size,

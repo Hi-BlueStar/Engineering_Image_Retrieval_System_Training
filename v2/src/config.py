@@ -174,6 +174,7 @@ class TrainingConfig:
     use_augmentation: bool = True
     use_gpu_augmentation: bool = True
     resume: bool = True
+    max_batches: Optional[int] = None  # 用於測試，限制每 epoch 的 batch 數
 
 
 @dataclass

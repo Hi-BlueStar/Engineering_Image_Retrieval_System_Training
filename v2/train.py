@@ -133,14 +133,6 @@ def _run_single_training(
             in_channels=m.in_channels,
         ).to(device)
 
-        # --- torch.compile (PyTorch 2.0+) ---
-        if hasattr(torch, "compile") and device == "cuda":
-            try:
-                logger.info("使用 torch.compile 優化模型...")
-                model = torch.compile(model)
-            except Exception as e:
-                logger.warning("torch.compile 失敗: %s", e)
-
         # --- GPU Augmentation ---
         gpu_aug = None
         if use_gpu_aug:
@@ -155,7 +147,7 @@ def _run_single_training(
             model.parameters(), lr=t.lr, weight_decay=t.weight_decay
         )
         scheduler = _build_scheduler(optimizer, t)
-        scaler = torch.amp.GradScaler(enabled=(device == "cuda" and t.use_amp))
+        scaler = torch.amp.GradScaler(device="cuda", enabled=(device == "cuda" and t.use_amp))
 
         # --- Checkpoint Manager ---
         run_tracker = tracker.create_run(run_name)
@@ -163,18 +155,6 @@ def _run_single_training(
             ckpt_dir=run_tracker.run_dir / "checkpoints",
             save_freq=e.save_freq,
             config_dict=cfg.to_dict(),
-        )
-
-        # --- Trainer ---
-        trainer = Trainer(
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            checkpoint_mgr=ckpt_mgr,
-            device=device,
-            grad_clip=t.grad_clip,
-            gpu_aug=gpu_aug,
         )
 
         # --- 斷點恢復 ---
@@ -194,6 +174,27 @@ def _run_single_training(
                     start_epoch,
                 )
 
+        # --- torch.compile (PyTorch 2.0+) ---
+        if hasattr(torch, "compile") and device == "cuda":
+            try:
+                logger.info("使用 torch.compile 優化模型...")
+                model = torch.compile(model)
+            except Exception as e:
+                logger.warning("torch.compile 失敗: %s", e)
+
+        # --- Trainer ---
+        trainer = Trainer(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            checkpoint_mgr=ckpt_mgr,
+            device=device,
+            grad_clip=t.grad_clip,
+            gpu_aug=gpu_aug,
+            max_batches=t.max_batches,
+        )
+
         # --- 訓練 ---
         result = trainer.fit(
             train_loader=train_loader,
@@ -212,8 +213,9 @@ def _run_single_training(
         eval_metrics = {}
         if labeled_ds is not None:
             try:
+                eval_model = getattr(model, "_orig_mod", model)
                 eval_metrics = evaluate_model(
-                    model=model,
+                    model=eval_model,
                     labeled_dataset=labeled_ds,
                     device=device,
                     top_k_values=d.eval_top_k_values,

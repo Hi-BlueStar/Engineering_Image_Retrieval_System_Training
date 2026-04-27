@@ -54,9 +54,9 @@ class SingleViewDataset(Dataset):
         self.root = root
         self._mode = "L" if in_channels == 1 else "RGB"
         self.images = self._scan(img_exts)
-        # 只做 resize + ToTensor（不做 normalize，交給 GPU aug）
+        # 使用較大的固定預縮放尺寸 (1024x1024) 以保留更多細節，並確保 batch collation 正常
         self._transform = T.Compose([
-            T.Resize((img_size, img_size)),
+            T.Resize((1024, 1024)),
             T.ToTensor(),
         ])
         logger.info(

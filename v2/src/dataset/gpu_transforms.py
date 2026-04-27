@@ -56,11 +56,16 @@ class RandomGPUMorphology(nn.Module):
         self.register_buffer("kernel", torch.ones(kernel_size, kernel_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.training or torch.rand(1).item() > self.p:
+        if not self.training:
+            return x
+
+        # 在 GPU 上產生隨機數，避免 .item() 造成的同步阻塞
+        r = torch.rand(2, device=x.device)
+        if r[0] > self.p:
             return x
 
         # 隨機選擇膨脹或腐蝕
-        if torch.rand(1).item() > 0.5:
+        if r[1] > 0.5:
             return KM.dilation(x, self.kernel)
         else:
             return KM.erosion(x, self.kernel)

@@ -278,8 +278,8 @@ class Trainer:
             Tuple[float, float]: ``(avg_loss, avg_std)``。
         """
         self.model.train()
-        total_loss = 0.0
-        total_std = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
+        total_std = torch.tensor(0.0, device=self.device)
         num_batches = 0
 
         amp_ctx = (
@@ -324,7 +324,7 @@ class Trainer:
                     )
                 self.optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += loss.detach()
 
             with torch.no_grad():
                 batch_std = (
@@ -342,8 +342,8 @@ class Trainer:
                 )
 
         return (
-            total_loss / max(num_batches, 1),
-            total_std / max(num_batches, 1),
+            (total_loss / max(num_batches, 1)).item(),
+            (total_std / max(num_batches, 1)).item(),
         )
 
     @torch.no_grad()
@@ -369,8 +369,8 @@ class Trainer:
             Tuple[float, float]: ``(avg_loss, avg_std)``。
         """
         self.model.eval()
-        total_loss = 0.0
-        total_std = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
+        total_std = torch.tensor(0.0, device=self.device)
         num_batches = 0
 
         amp_ctx = (
@@ -394,7 +394,7 @@ class Trainer:
                 p1, p2, z1, z2 = self.model(v1, v2)
                 loss = self.loss_fn(p1, p2, z1, z2)
 
-            total_loss += loss.item()
+            total_loss += loss.detach()
             batch_std = (
                 calculate_collapse_std(z1) + calculate_collapse_std(z2)
             ) / 2.0
@@ -409,6 +409,6 @@ class Trainer:
                 )
 
         return (
-            total_loss / max(num_batches, 1),
-            total_std / max(num_batches, 1),
+            (total_loss / max(num_batches, 1)).item(),
+            (total_std / max(num_batches, 1)).item(),
         )

@@ -66,6 +66,27 @@ _CC_COLORS_BGR = [
 _CC_COLORS_RGB = [(r, g, b) for b, g, r in _CC_COLORS_BGR]
 
 
+def letterbox_image(img: np.ndarray, size: int, fill: int = 255) -> np.ndarray:
+    """使用 OpenCV 實現等比例縮放並填充 (Letterboxing)。"""
+    h, w = img.shape[:2]
+    scale = size / max(h, w)
+    nw, nh = int(w * scale), int(h * scale)
+
+    # 縮放影像
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+
+    # 建立畫布
+    if len(img.shape) == 3:
+        canvas = np.full((size, size, 3), fill, dtype=np.uint8)
+    else:
+        canvas = np.full((size, size), fill, dtype=np.uint8)
+
+    # 置中貼上
+    dx, dy = (size - nw) // 2, (size - nh) // 2
+    canvas[dy : dy + nh, dx : dx + nw] = resized
+    return canvas
+
+
 class PreprocessingPreview:
     """前處理管線視覺化工具。
 
@@ -249,6 +270,22 @@ class PreprocessingPreview:
                     cv2.BORDER_CONSTANT, value=255
                 )
                 stages[f"comp_{i+1}"] = padded_crop
+
+            # Stage 5: SimSiam Resize (The final online step)
+            if self.params.get("img_size"):
+                size = self.params["img_size"]
+                # Use the last crop (or the only one if top_n=1) for resize preview
+                # In SimSiam v2, each crop becomes an independent training sample
+                for i, crop in enumerate(crops):
+                    inv_crop = 255 - crop
+                    # 改用 letterbox_image 保留比例
+                    resized = letterbox_image(inv_crop, size, fill=255)
+                    stages[f"resized_{i+1}"] = resized
+                    
+                    # 模擬一次數據增強 (隨機旋轉/Jitter 等)
+                    # 這裡僅作視覺示意，實際訓練增強在 GPU 上隨機發生
+                    aug_sample = self._simulate_augmentation(resized)
+                    stages[f"aug_sample_{i+1}"] = aug_sample
         else:
             # Fallback for no CCs
             if self.params.get("use_connected_components"):
@@ -276,9 +313,35 @@ class PreprocessingPreview:
             )
             stages["full_image"] = padded_current
 
+            # Stage 5: SimSiam Resize (The final online step)
+            if self.params.get("img_size"):
+                size = self.params["img_size"]
+                # 改用 letterbox_image 保留比例
+                resized = letterbox_image(padded_current, size, fill=255)
+                stages["resized_full"] = resized
+                
+                # 模擬一次數據增強
+                aug_sample = self._simulate_augmentation(resized)
+                stages["aug_sample_full"] = aug_sample
+
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
         self._generate_figure(img_path, stages, labels_info, out_path)
         return out_path
+
+    def _simulate_augmentation(self, img: np.ndarray) -> np.ndarray:
+        """模擬簡單的數據增強以供預覽。"""
+        # 簡單隨機旋轉與亮度調整
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        angle = random.uniform(-15, 15)
+        scale = random.uniform(0.9, 1.1)
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+        aug = cv2.warpAffine(img, M, (w, h), borderValue=255)
+        
+        # 亮度調整
+        alpha = random.uniform(0.8, 1.2)
+        aug = cv2.convertScaleAbs(aug, alpha=alpha, beta=0)
+        return aug
 
     # ------------------------------------------------------------------ #
     # CC extraction with visualisation
@@ -342,6 +405,11 @@ class PreprocessingPreview:
         for i in range(10):
             stage_labels[f"pruning_iter_{i+1}"] = f"拓撲剪枝 Iter {i+1}"
             stage_labels[f"comp_{i+1}"] = f"元件 {i+1} (含 Padding)"
+            stage_labels[f"resized_{i+1}"] = f"訓練輸入 {i+1} (等比例)"
+            stage_labels[f"aug_sample_{i+1}"] = f"增強示意 {i+1}"
+        
+        stage_labels["resized_full"] = f"訓練輸入 (等比例)"
+        stage_labels["aug_sample_full"] = "增強示意 (隨機)"
 
         n = len(stages)
         # 動態計算排版：最多 4 行，超過則折行

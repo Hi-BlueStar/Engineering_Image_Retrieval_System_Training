@@ -18,6 +18,7 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
+from src.dataset.dataset import Letterbox
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -76,7 +77,7 @@ class LabeledImageDataset(Dataset):
         mean = [0.5] * in_channels
         std = [0.5] * in_channels
         self._transform = T.Compose([
-            T.Resize((img_size, img_size)),
+            Letterbox(img_size, fill=255),
             T.ToTensor(),
             T.Normalize(mean=mean, std=std),
         ])

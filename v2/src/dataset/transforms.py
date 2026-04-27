@@ -21,6 +21,8 @@ from typing import Tuple, Union
 import torchvision.transforms as T
 from PIL import Image
 
+from src.dataset.dataset import Letterbox
+
 
 class EngineeringDrawingAugmentation:
     """工程圖 SimSiam 雙視角增強器。
@@ -51,9 +53,9 @@ class EngineeringDrawingAugmentation:
                 T.Normalize(mean=mean, std=std),
             ])
         else:
-            # 消融實驗：無增強版（僅 resize + normalize）
+            # 消融實驗：無增強版（僅 Letterbox + normalize）
             self._transform = T.Compose([
-                T.Resize((img_size, img_size)),
+                Letterbox(img_size, fill=255),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

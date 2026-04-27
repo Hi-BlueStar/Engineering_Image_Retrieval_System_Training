@@ -31,6 +31,32 @@ logger = get_logger(__name__)
 _IMG_EXTS = {".jpg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
+class Letterbox:
+    """等比例縮放並填充 (Letterboxing)，確保影像不變形。
+
+    Args:
+        size: 目標正方形邊長。
+        fill: 填充顏色（預設 255 為白色）。
+    """
+
+    def __init__(self, size: int, fill: int = 255) -> None:
+        self.size = size
+        self.fill = fill
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        w, h = img.size
+        if w == h:
+            return img.resize((self.size, self.size), Image.Resampling.BILINEAR)
+
+        scale = self.size / max(w, h)
+        nw, nh = int(w * scale), int(h * scale)
+
+        img = img.resize((nw, nh), Image.Resampling.BILINEAR)
+        new_img = Image.new(img.mode, (self.size, self.size), self.fill)
+        new_img.paste(img, ((self.size - nw) // 2, (self.size - nh) // 2))
+        return new_img
+
+
 class SingleViewDataset(Dataset):
     """GPU 增強模式資料集：回傳 resize 後的單張 raw tensor。
 
@@ -54,9 +80,9 @@ class SingleViewDataset(Dataset):
         self.root = root
         self._mode = "L" if in_channels == 1 else "RGB"
         self.images = self._scan(img_exts)
-        # 使用較大的固定預縮放尺寸 (1024x1024) 以保留更多細節，並確保 batch collation 正常
+        # 使用 Letterbox 取代 T.Resize，保留原始比例並填充為正方形，避免工程圖形狀失真
         self._transform = T.Compose([
-            T.Resize((1024, 1024)),
+            Letterbox(img_size, fill=255),
             T.ToTensor(),
         ])
         logger.info(

@@ -90,4 +90,4 @@ def calculate_collapse_std(z: torch.Tensor) -> float:
         float: 維度標準差平均值。
     """
     z_norm = F.normalize(z, dim=1)
-    return z_norm.std(dim=0).mean().item()
+    return z_norm.std(dim=0).mean()

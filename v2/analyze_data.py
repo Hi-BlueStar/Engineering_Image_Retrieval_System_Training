@@ -97,6 +97,7 @@ def cmd_preview(args: argparse.Namespace, cfg: AppConfig) -> None:
         "logo_template_path": d.logo_template_path,
         "logo_mask_region": d.logo_mask_region,
         "min_bbox_area": d.preprocess_min_bbox_area,
+        "img_size": cfg.training.img_size,
     }
 
     preview = PreprocessingPreview(

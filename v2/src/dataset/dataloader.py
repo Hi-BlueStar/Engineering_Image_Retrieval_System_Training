@@ -22,7 +22,9 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
+
 
 from src.config import TrainingConfig
 from src.dataset.dataset import SingleViewDataset, UnlabeledImageDataset
@@ -119,6 +121,8 @@ def _make_seed_utils(seed: Optional[int]):
     generator.manual_seed(seed)
 
     def worker_init(worker_id: int) -> None:
+        # 確保 worker 進程也關閉 PIL 像素限制
+        Image.MAX_IMAGE_PIXELS = None
         worker_seed = seed + worker_id
         random.seed(worker_seed)
         np.random.seed(worker_seed)

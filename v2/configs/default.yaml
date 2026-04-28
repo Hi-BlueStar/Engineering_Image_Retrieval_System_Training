@@ -83,7 +83,7 @@ training:
   lr: 2.0e-5
   weight_decay: 1.0e-5
   num_workers: 16 # GPU aug 模式下 workers 數可減少，但仍需足夠 I/O 吞吐量
-  prefetch_factor: 2
+  prefetch_factor: 4
   img_exts:
     - ".jpg"
     - ".png"

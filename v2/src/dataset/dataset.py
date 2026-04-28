@@ -22,6 +22,8 @@ from typing import List, Tuple, Union
 import torch
 import torchvision.transforms as T
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
+
 from torch.utils.data import Dataset
 
 from src.logger import get_logger

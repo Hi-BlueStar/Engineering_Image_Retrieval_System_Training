@@ -20,6 +20,10 @@ from pathlib import Path
 
 import torch
 import torch.backends.cudnn as cudnn
+from PIL import Image
+
+Image.MAX_IMAGE_PIXELS = None
+
 
 # --- 確保專案根目錄在 Python Path ---
 PROJECT_ROOT = Path(__file__).resolve().parent

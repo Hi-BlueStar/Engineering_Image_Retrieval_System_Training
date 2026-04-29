@@ -139,7 +139,10 @@ class SingleViewDataset(Dataset):
         for i, path in enumerate(self.images):
             img = Image.open(path).convert(self._mode)
             img = self._letterbox(img)  # PIL → letterboxed PIL (s × s)
-            arr = np.asarray(img, dtype=np.uint8)  # [H, W] or [H, W, C]
+            # 用 np.array（非 np.asarray）強制取得可寫副本：PIL 的緩衝區是唯讀，
+            # np.asarray 會共享之並讓 torch.from_numpy 噴 "non-writable tensor"
+            # UserWarning。我們之後會 copy 進 cache[i]，所以提前複製是零額外成本。
+            arr = np.array(img, dtype=np.uint8)  # [H, W] or [H, W, C]
             if arr.ndim == 2:  # grayscale
                 cache[i, 0] = torch.from_numpy(arr)
             else:  # RGB

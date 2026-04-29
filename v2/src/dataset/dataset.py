@@ -70,10 +70,13 @@ class SingleViewDataset(Dataset):
         img_size: 輸出影像邊長（正方形，僅做 resize）。
         img_exts: 支援的影像副檔名列表。
         in_channels: 輸入通道數；``1`` 載入灰階，``3`` 載入 RGB。
-        cache_in_memory: 是否在 ``__init__`` 一次性把所有影像解碼為 uint8
-            numpy 陣列保留在 RAM。開啟可消除每個 epoch 的 disk I/O 與
-            PNG 解碼成本，是高階硬體上消除 CPU 瓶頸的關鍵手段。
-            Linux fork 的 worker 會以 copy-on-write 共享此 cache。
+        cache_in_memory: 是否在 ``__init__`` 一次性把所有影像「letterbox 後」
+            存成單一連續 uint8 tensor ``[N, C, H, W]`` 並 ``share_memory_()``。
+            開啟可消除每個 epoch 的 disk I/O 與 PNG 解碼成本。
+            記憶體用量精準等於 ``N * C * img_size² bytes``，且因為是單一
+            連續 tensor + share_memory_，DataLoader workers 真正共享，
+            不會發生 list-of-ndarray 在 CPython refcount 寫入時的
+            copy-on-write 失效（先前實作會放大數倍～數十倍）。
     """
 
     def __init__(
@@ -85,14 +88,17 @@ class SingleViewDataset(Dataset):
         cache_in_memory: bool = False,
     ) -> None:
         self.root = root
+        self.img_size = img_size
+        self.in_channels = in_channels
         self._mode = "L" if in_channels == 1 else "RGB"
+        self._letterbox = Letterbox(img_size, fill=255)
         self.images = self._scan(img_exts)
-        # 使用 Letterbox 取代 T.Resize，保留原始比例並填充為正方形，避免工程圖形狀失真
+        # 非 cache 路徑：保留原本的 PIL → Letterbox → ToTensor 管線
         self._transform = T.Compose([
-            Letterbox(img_size, fill=255),
+            self._letterbox,
             T.ToTensor(),
         ])
-        self._cache: Optional[List[np.ndarray]] = (
+        self._cache: Optional[torch.Tensor] = (
             self._build_cache() if cache_in_memory else None
         )
         logger.info(
@@ -104,26 +110,48 @@ class SingleViewDataset(Dataset):
         ext_set = {e.lower() for e in img_exts}
         return sorted(p for p in self.root.rglob("*") if p.suffix.lower() in ext_set)
 
-    def _build_cache(self) -> List[np.ndarray]:
+    def _build_cache(self) -> torch.Tensor:
+        """一次性解碼 + letterbox 為單一連續 uint8 tensor。
+
+        - 在 build 時就套用 Letterbox（deterministic），避免 cache 儲存
+          原圖尺寸（在 400 DPI 工程圖上原圖可能 3–15 MB / 張，被 256² 縮放
+          後僅 64 KB / 張，差距 50–200 倍）。
+        - 單一連續 tensor + ``share_memory_()`` → fork 的 workers 直接
+          共享同一塊記憶體，不會被 Python refcount 寫入觸發 CoW 複製。
+        - 回傳形狀 ``[N, C, img_size, img_size]`` 的 ``torch.uint8`` tensor。
+        """
         n = len(self.images)
-        logger.info("SingleViewDataset: 開始 in-RAM 解碼快取 (n=%d, root=%s)", n, self.root)
+        c = self.in_channels
+        s = self.img_size
+        expected_gb = n * c * s * s / 1e9
+        logger.info(
+            "SingleViewDataset: 開始 in-RAM 解碼快取 (n=%d, shape=[N,%d,%d,%d], "
+            "預期 %.2f GB, root=%s)",
+            n, c, s, s, expected_gb, self.root,
+        )
         t0 = time.perf_counter()
-        cache: List[np.ndarray] = []
-        total_bytes = 0
+
+        cache = torch.empty((n, c, s, s), dtype=torch.uint8)
         log_every = max(1, n // 10)
+
         for i, path in enumerate(self.images):
-            arr = np.asarray(Image.open(path).convert(self._mode), dtype=np.uint8)
-            cache.append(arr)
-            total_bytes += arr.nbytes
+            img = Image.open(path).convert(self._mode)
+            img = self._letterbox(img)  # PIL → letterboxed PIL (s × s)
+            arr = np.asarray(img, dtype=np.uint8)  # [H, W] or [H, W, C]
+            if arr.ndim == 2:  # grayscale
+                cache[i, 0] = torch.from_numpy(arr)
+            else:  # RGB
+                # arr [H, W, C] → tensor [C, H, W]
+                cache[i] = torch.from_numpy(arr).permute(2, 0, 1)
+
             if (i + 1) % log_every == 0 or (i + 1) == n:
-                logger.info(
-                    "  快取進度: %d/%d (%.0f%%, 累計 %.2f GB)",
-                    i + 1, n, 100.0 * (i + 1) / n, total_bytes / 1e9,
-                )
+                logger.info("  快取進度: %d/%d (%.0f%%)", i + 1, n, 100.0 * (i + 1) / n)
+
+        cache.share_memory_()  # 跨 worker 真正共享，避免 CoW 倍增
         elapsed = time.perf_counter() - t0
         logger.info(
-            "SingleViewDataset: 快取完成 — %d 張, %.2f GB, 耗時 %.1fs",
-            n, total_bytes / 1e9, elapsed,
+            "SingleViewDataset: 快取完成 — %d 張, %.2f GB（單一 share_memory tensor）, 耗時 %.1fs",
+            n, cache.numel() / 1e9, elapsed,
         )
         return cache
 
@@ -132,9 +160,11 @@ class SingleViewDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         if self._cache is not None:
-            img = Image.fromarray(self._cache[idx], mode=self._mode)
-        else:
-            img = Image.open(self.images[idx]).convert(self._mode)
+            # cache hit fast path：直接從共享 uint8 tensor 取 → float [0,1]，
+            # 跳過 PIL.fromarray 與 Letterbox（cache 已經是 letterboxed）
+            return self._cache[idx].to(dtype=torch.float32).div_(255.0)
+        # 非 cache：原 PIL 路徑
+        img = Image.open(self.images[idx]).convert(self._mode)
         return self._transform(img)
 
 

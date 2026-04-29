@@ -144,9 +144,16 @@ training:
 sudo rm -rf data/converted_images data/preprocessed_images data/raw_pdfs dataset
 ```
 
+temp：
+
 ```bash
-# 測試訓練流程：
-uv run python v2/train.py --config v2/configs/minimal_test.yaml
+uv run python v2/prepare_data.py --config v2/configs/default.yaml data.skip_extraction=true data.skip_pdf_conversion=true data.skip_preprocessing=true
+uv run python v2/train.py --config v2/configs/default.yaml training.max_batches=200
+```
+
+```bash
+# 視覺化與檢查前處理效果
+uv run python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
 ```
 
 ```bash
@@ -158,6 +165,11 @@ uv run python v2/prepare_data.py --config v2/configs/default.yaml data.skip_extr
 ```
 
 ### 3.3 執行訓練
+
+```bash
+# 測試訓練流程：
+uv run python v2/train.py --config v2/configs/minimal_test.yaml
+```
 
 ```bash
 # 基本訓練

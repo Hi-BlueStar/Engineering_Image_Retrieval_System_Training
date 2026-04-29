@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torchvision.transforms as T
 from PIL import Image
@@ -68,6 +70,10 @@ class SingleViewDataset(Dataset):
         img_size: 輸出影像邊長（正方形，僅做 resize）。
         img_exts: 支援的影像副檔名列表。
         in_channels: 輸入通道數；``1`` 載入灰階，``3`` 載入 RGB。
+        cache_in_memory: 是否在 ``__init__`` 一次性把所有影像解碼為 uint8
+            numpy 陣列保留在 RAM。開啟可消除每個 epoch 的 disk I/O 與
+            PNG 解碼成本，是高階硬體上消除 CPU 瓶頸的關鍵手段。
+            Linux fork 的 worker 會以 copy-on-write 共享此 cache。
     """
 
     def __init__(
@@ -76,6 +82,7 @@ class SingleViewDataset(Dataset):
         img_size: int,
         img_exts: List[str],
         in_channels: int = 1,
+        cache_in_memory: bool = False,
     ) -> None:
         self.root = root
         self._mode = "L" if in_channels == 1 else "RGB"
@@ -85,20 +92,49 @@ class SingleViewDataset(Dataset):
             Letterbox(img_size, fill=255),
             T.ToTensor(),
         ])
+        self._cache: Optional[List[np.ndarray]] = (
+            self._build_cache() if cache_in_memory else None
+        )
         logger.info(
-            "SingleViewDataset: root=%s, n=%d, mode=%s",
-            root, len(self.images), self._mode,
+            "SingleViewDataset: root=%s, n=%d, mode=%s, cached=%s",
+            root, len(self.images), self._mode, self._cache is not None,
         )
 
     def _scan(self, img_exts: List[str]) -> List[Path]:
         ext_set = {e.lower() for e in img_exts}
         return sorted(p for p in self.root.rglob("*") if p.suffix.lower() in ext_set)
 
+    def _build_cache(self) -> List[np.ndarray]:
+        n = len(self.images)
+        logger.info("SingleViewDataset: 開始 in-RAM 解碼快取 (n=%d, root=%s)", n, self.root)
+        t0 = time.perf_counter()
+        cache: List[np.ndarray] = []
+        total_bytes = 0
+        log_every = max(1, n // 10)
+        for i, path in enumerate(self.images):
+            arr = np.asarray(Image.open(path).convert(self._mode), dtype=np.uint8)
+            cache.append(arr)
+            total_bytes += arr.nbytes
+            if (i + 1) % log_every == 0 or (i + 1) == n:
+                logger.info(
+                    "  快取進度: %d/%d (%.0f%%, 累計 %.2f GB)",
+                    i + 1, n, 100.0 * (i + 1) / n, total_bytes / 1e9,
+                )
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "SingleViewDataset: 快取完成 — %d 張, %.2f GB, 耗時 %.1fs",
+            n, total_bytes / 1e9, elapsed,
+        )
+        return cache
+
     def __len__(self) -> int:
         return len(self.images)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        img = Image.open(self.images[idx]).convert(self._mode)
+        if self._cache is not None:
+            img = Image.fromarray(self._cache[idx], mode=self._mode)
+        else:
+            img = Image.open(self.images[idx]).convert(self._mode)
         return self._transform(img)
 
 

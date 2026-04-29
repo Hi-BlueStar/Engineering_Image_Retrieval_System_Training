@@ -186,9 +186,12 @@ class GPUAugmentation(nn.Module):
             Tuple[Tensor, Tensor]: (view1, view2)，各 [B, C, H, W]。
         """
         if self._aug is not None:
-            # 兩次獨立前向 → 不同隨機增強
-            v1 = self._aug(x)
-            v2 = self._aug(x)
+            # 將兩 view 串成單一 2B batch 一次過增強：減半 kornia kernel launch overhead。
+            # same_on_batch=False 保證每個 sample 隨機參數獨立，等效於兩次獨立前向。
+            b = x.shape[0]
+            x2 = torch.cat([x, x], dim=0)
+            out = self._aug(x2)
+            v1, v2 = out[:b], out[b:]
         else:
             # Fallback: resize + normalize on GPU（無 kornia）
             v1 = self._manual_normalize(x)

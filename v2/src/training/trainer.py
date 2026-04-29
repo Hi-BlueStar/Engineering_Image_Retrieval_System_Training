@@ -56,6 +56,9 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 _console = Console()
 
+# Progress bar 每 N batch 才同步一次 loss，避免 per-batch GPU→CPU sync 拖慢 GPU
+_PROGRESS_SYNC_EVERY = 20
+
 
 def _make_progress() -> Progress:
     return Progress(
@@ -96,6 +99,7 @@ class Trainer:
         grad_clip: float = 0.0,
         gpu_aug: Optional[GPUAugmentation] = None,
         max_batches: Optional[int] = None,
+        channels_last: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -107,6 +111,8 @@ class Trainer:
         self.grad_clip = grad_clip
         self.gpu_aug = gpu_aug  # None → DataLoader 已提供 (v1, v2)
         self.max_batches = max_batches
+        self.channels_last = channels_last
+        self._mem_fmt = torch.channels_last if channels_last else torch.contiguous_format
 
     def fit(
         self,
@@ -301,6 +307,10 @@ class Trainer:
                 v1 = v1.to(self.device, non_blocking=True)
                 v2 = v2.to(self.device, non_blocking=True)
 
+            if self.channels_last:
+                v1 = v1.to(memory_format=self._mem_fmt)
+                v2 = v2.to(memory_format=self._mem_fmt)
+
             self.optimizer.zero_grad(set_to_none=True)
 
             with amp_ctx:
@@ -335,11 +345,16 @@ class Trainer:
             num_batches += 1
 
             if progress is not None and task_id is not None:
-                progress.update(
-                    task_id,
-                    advance=1,
-                    info=f"[dim]loss={loss.item():.4f}[/]",
-                )
+                is_last = (i + 1) == len(loader)
+                if num_batches % _PROGRESS_SYNC_EVERY == 0 or is_last:
+                    avg_loss = (total_loss / num_batches).item()
+                    progress.update(
+                        task_id,
+                        advance=1,
+                        info=f"[dim]loss={avg_loss:.4f}[/]",
+                    )
+                else:
+                    progress.update(task_id, advance=1)
 
         return (
             (total_loss / max(num_batches, 1)).item(),
@@ -390,6 +405,10 @@ class Trainer:
                 v1 = v1.to(self.device, non_blocking=True)
                 v2 = v2.to(self.device, non_blocking=True)
 
+            if self.channels_last:
+                v1 = v1.to(memory_format=self._mem_fmt)
+                v2 = v2.to(memory_format=self._mem_fmt)
+
             with amp_ctx:
                 p1, p2, z1, z2 = self.model(v1, v2)
                 loss = self.loss_fn(p1, p2, z1, z2)
@@ -402,11 +421,16 @@ class Trainer:
             num_batches += 1
 
             if progress is not None and task_id is not None:
-                progress.update(
-                    task_id,
-                    advance=1,
-                    info=f"[dim]loss={loss.item():.4f}[/]",
-                )
+                is_last = (i + 1) == len(loader)
+                if num_batches % _PROGRESS_SYNC_EVERY == 0 or is_last:
+                    avg_loss = (total_loss / num_batches).item()
+                    progress.update(
+                        task_id,
+                        advance=1,
+                        info=f"[dim]loss={avg_loss:.4f}[/]",
+                    )
+                else:
+                    progress.update(task_id, advance=1)
 
         return (
             (total_loss / max(num_batches, 1)).item(),

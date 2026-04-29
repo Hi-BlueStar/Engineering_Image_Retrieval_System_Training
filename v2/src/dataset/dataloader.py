@@ -58,8 +58,13 @@ def create_dataloaders(
 
     if use_gpu_augmentation:
         # GPU 模式：Dataset 回傳 raw tensor，Trainer 做增強
-        train_ds = SingleViewDataset(train_path, t.img_size, t.img_exts, in_channels)
-        val_ds = SingleViewDataset(val_path, t.img_size, t.img_exts, in_channels)
+        cache = getattr(t, "cache_in_memory", False)
+        train_ds = SingleViewDataset(
+            train_path, t.img_size, t.img_exts, in_channels, cache_in_memory=cache,
+        )
+        val_ds = SingleViewDataset(
+            val_path, t.img_size, t.img_exts, in_channels, cache_in_memory=cache,
+        )
     else:
         # CPU 模式：Dataset 回傳 (v1, v2) 增強雙視角
         mean = tuple(0.5 for _ in range(in_channels))

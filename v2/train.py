@@ -137,6 +137,11 @@ def _run_single_training(
             in_channels=m.in_channels,
         ).to(device)
 
+        use_channels_last = bool(getattr(t, "channels_last", False)) and device == "cuda"
+        if use_channels_last:
+            model = model.to(memory_format=torch.channels_last)
+            logger.info("Model 已轉為 channels_last 記憶體格式")
+
         # --- GPU Augmentation ---
         gpu_aug = None
         if use_gpu_aug:
@@ -181,8 +186,8 @@ def _run_single_training(
         # --- torch.compile (PyTorch 2.0+) ---
         if hasattr(torch, "compile") and device == "cuda":
             try:
-                logger.info("使用 torch.compile 優化模型...")
-                model = torch.compile(model)
+                logger.info("使用 torch.compile 優化模型 (mode=reduce-overhead, dynamic=False)...")
+                model = torch.compile(model, mode="reduce-overhead", dynamic=False)
             except Exception as e:
                 logger.warning("torch.compile 失敗: %s", e)
 
@@ -197,6 +202,7 @@ def _run_single_training(
             grad_clip=t.grad_clip,
             gpu_aug=gpu_aug,
             max_batches=t.max_batches,
+            channels_last=use_channels_last,
         )
 
         # --- 訓練 ---
@@ -325,7 +331,9 @@ def main() -> None:
     # --- GPU 核心優化 ---
     if torch.cuda.is_available():
         cudnn.benchmark = True
-        logger.info("已啟用 cudnn.benchmark")
+        # TF32 matmul：在 Ampere+ 上對 FP32 路徑加速；AMP 的 FP16 路徑不受影響但 fallback 也更快
+        torch.set_float32_matmul_precision("high")
+        logger.info("已啟用 cudnn.benchmark, float32_matmul_precision=high")
 
     run_results: list[dict] = []
     for run_idx in range(cfg.data.n_runs):

@@ -87,6 +87,7 @@ class DataConfig:
     skip_pdf_conversion: bool = False
     skip_labeled_pdf_conversion: bool = False
     preprocessed_image_dir: str = "data/preprocessed_images"
+    preprocessed_labeled_image_dir: str = "data/preprocessed_labeled_images"
     preprocess_top_n: int = 5
     preprocess_max_bbox_ratio: float = 0.9
     preprocess_padding: int = 2
@@ -94,6 +95,7 @@ class DataConfig:
     preprocess_min_bbox_area: int = 0
     preprocess_max_workers: int = 12
     skip_preprocessing: bool = False
+    skip_labeled_preprocessing: bool = False
     dataset_dir: str = "dataset"
     split_ratio: float = 0.8
     n_runs: int = 1

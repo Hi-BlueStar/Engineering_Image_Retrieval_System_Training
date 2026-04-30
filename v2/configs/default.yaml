@@ -30,12 +30,14 @@ data:
 
   # --- 影像前處理 ---
   preprocessed_image_dir: "data/preprocessed_images"
+  preprocessed_labeled_image_dir: "data/preprocessed_labeled_images"
   preprocess_top_n: 0 # 3
   preprocess_max_bbox_ratio: 0.7
   preprocess_min_bbox_area: 100000
   preprocess_padding: 2
   preprocess_max_workers: 12
   skip_preprocessing: false
+  skip_labeled_preprocessing: false
 
   # --- 消融實驗前處理旗標 ---
   use_connected_components: true # 連通元件分析 + 隨機排列

@@ -185,6 +185,42 @@ def main() -> None:
     t.stop()
 
     # ========================================================
+    # Step 3b: 標籤影像前處理
+    # ========================================================
+    logger.info("=" * 60)
+    logger.info("Step 3b: 標籤影像前處理（連通元件分析）")
+    logger.info("=" * 60)
+
+    t = timers.create("step_3b_labeled_preprocessing")
+    t.start()
+
+    labeled_src = Path(d.converted_labeled_image_dir)
+    if labeled_src.exists():
+        labeled_prep_cfg = PreprocessConfig(
+            input_dir=str(labeled_src),
+            output_root=d.preprocessed_labeled_image_dir,
+            max_workers=d.preprocess_max_workers,
+            top_n=d.preprocess_top_n,
+            max_bbox_ratio=d.preprocess_max_bbox_ratio,
+            min_bbox_area=d.preprocess_min_bbox_area,
+            padding=d.preprocess_padding,
+
+            use_connected_components=d.use_connected_components,
+            use_topology_analysis=d.use_topology_analysis,
+            use_topology_pruning=d.use_topology_pruning,
+            topology_pruning_iters=d.topology_pruning_iters,
+            topology_pruning_ksize=d.topology_pruning_ksize,
+            min_simple_area=d.min_simple_area,
+            remove_gifu_logo=d.remove_gifu_logo,
+            logo_template_path=d.logo_template_path,
+            logo_mask_region=d.logo_mask_region,
+        )
+        preprocess_images(labeled_prep_cfg, skip=d.skip_labeled_preprocessing)
+    else:
+        logger.warning("標籤影像目錄不存在，跳過標籤前處理: %s", labeled_src)
+    t.stop()
+
+    # ========================================================
     # Step 4: 資料集分割（多 Run）
     # ========================================================
     logger.info("=" * 60)

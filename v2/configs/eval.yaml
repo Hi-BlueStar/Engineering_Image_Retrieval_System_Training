@@ -23,7 +23,7 @@ eval:
   labeled_data_path: "data/converted_labeled_images"
 
   # 前處理後標籤資料；空字串 = 只評估原始資料，不做比較
-  preprocessed_labeled_data_path: ""
+  preprocessed_labeled_data_path: "data/preprocessed_labeled_images"
 
   # JSON 結果輸出路徑
   output_path: "outputs/eval_results.json"

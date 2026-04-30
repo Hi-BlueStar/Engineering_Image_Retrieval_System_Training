@@ -211,6 +211,30 @@ class LoggingConfig:
     use_rich: bool = True
 
 
+@dataclass
+class EvalConfig:
+    """獨立評估管線設定。
+
+    Attributes:
+        checkpoint_path: 要評估的 .pth checkpoint 路徑。
+        labeled_data_path: 原始轉檔標籤資料根目錄（無前處理）。
+        preprocessed_labeled_data_path: 前處理後標籤資料根目錄；
+            空字串表示不做比較。
+        output_path: 評估結果 JSON 輸出路徑。
+        batch_size: 特徵提取 batch 大小。
+        num_workers: DataLoader worker 數量。
+        top_k_values: 計算 Precision@K 的 K 值列表。
+    """
+
+    checkpoint_path: str = ""
+    labeled_data_path: str = "data/converted_labeled_images"
+    preprocessed_labeled_data_path: str = ""
+    output_path: str = "outputs/eval_results.json"
+    batch_size: int = 64
+    num_workers: int = 4
+    top_k_values: List[int] = field(default_factory=lambda: [1, 5, 10, 20, 40, 80])
+
+
 # ============================================================
 # 頂層設定 (Top-Level Config)
 # ============================================================
@@ -225,6 +249,7 @@ class AppConfig:
         model: 模型架構設定。
         training: 訓練超參數。
         experiment: 實驗追蹤設定。
+        eval: 獨立評估管線設定。
     """
 
     data: DataConfig = field(default_factory=DataConfig)
@@ -232,6 +257,7 @@ class AppConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
 
     # ----------------------------------------------------------
     # 工廠方法

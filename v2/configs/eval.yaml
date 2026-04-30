@@ -1,0 +1,67 @@
+# ==============================================================================
+# SimSiam 工程圖檢索 — 獨立評估設定檔
+# ==============================================================================
+# 用途：在訓練完成後，對有標籤資料集評估 checkpoint，
+#       並可選比較「原始轉檔影像」vs「前處理影像」的檢索指標差異。
+#
+# 使用方式:
+#   python v2/evaluate.py --config v2/configs/eval.yaml
+#   python v2/evaluate.py --config v2/configs/eval.yaml \
+#       eval.checkpoint_path=outputs/my_exp/checkpoints/checkpoint_best.pth
+#   python v2/evaluate.py --config v2/configs/eval.yaml \
+#       eval.preprocessed_labeled_data_path=data/preprocessed_labeled_images
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 評估設定 (Evaluation)
+# ------------------------------------------------------------------------------
+eval:
+  # 必填：訓練產生的 checkpoint 路徑（可用 CLI override 覆寫）
+  checkpoint_path: "outputs/simsiam_exp/Run_01_Seed_42/checkpoints/checkpoint_best.pth"
+
+  # 原始轉檔標籤資料（無任何前處理）
+  labeled_data_path: "data/converted_labeled_images"
+
+  # 前處理後標籤資料；空字串 = 只評估原始資料，不做比較
+  preprocessed_labeled_data_path: ""
+
+  # JSON 結果輸出路徑
+  output_path: "outputs/eval_results.json"
+
+  # 特徵提取設定
+  batch_size: 64
+  num_workers: 4
+
+  # Precision@K 的 K 值列表
+  top_k_values: [1, 5, 10, 20, 40, 80]
+
+# ------------------------------------------------------------------------------
+# 模型設定 — 必須與 checkpoint 完全一致
+# ------------------------------------------------------------------------------
+model:
+  backbone: "resnet18"
+  pretrained: false   # 權重來自 checkpoint，不載入 ImageNet
+  in_channels: 1
+  proj_dim: 2048
+  proj_hidden: null
+  pred_hidden: 512
+
+# ------------------------------------------------------------------------------
+# 訓練設定 — 評估只需要 img_size 與 img_exts
+# ------------------------------------------------------------------------------
+training:
+  img_size: 256
+  img_exts:
+    - ".jpg"
+    - ".png"
+    - ".bmp"
+    - ".tif"
+    - ".webp"
+
+# ------------------------------------------------------------------------------
+# 日誌設定
+# ------------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  log_to_file: false
+  use_rich: true

@@ -13,7 +13,6 @@ CPU 瓶頸。
     - RandomResizedCrop(0.2~1.0 scale)：學習局部特徵
     - RandomHorizontalFlip / RandomVerticalFlip：圖紙方向不定
     - RandomRotation(±30°)：旋轉不變性（工程圖常旋轉擺放）
-    - ColorJitter(brightness, contrast)：模擬掃描品質差異
     - Normalize(0.5, 0.5)：標準化
 
 Dependencies:
@@ -146,16 +145,10 @@ class GPUAugmentation(nn.Module):
                     same_on_batch=False,
                 ),
 
-                # 6. 顏色擾動
-                K.ColorJitter(
-                    brightness=0.4, contrast=0.4,
-                    p=0.8, same_on_batch=False,
-                ),
-
-                # 7. 正規化
+                # 6. 正規化
                 K.Normalize(mean=mean, std=std),
 
-                # 8. 遮擋 (Cutout)
+                # 7. 遮擋 (Cutout)
                 K.RandomErasing(
                     scale=(0.02, 0.15),
                     ratio=(0.3, 3.3),

@@ -9,7 +9,6 @@
     - RandomResizedCrop：學習局部特徵
     - RandomHorizontalFlip / RandomVerticalFlip：圖紙方向不定
     - RandomRotation：旋轉不變性
-    - ColorJitter (brightness, contrast)：模擬不同掃描品質
     - Normalize：均值 0.5，標準差 0.5
 ============================================================
 """
@@ -46,9 +45,6 @@ class EngineeringDrawingAugmentation:
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
                 T.RandomApply([T.RandomRotation(degrees=30)], p=0.5),
-                T.RandomApply(
-                    [T.ColorJitter(brightness=0.4, contrast=0.4)], p=0.8
-                ),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

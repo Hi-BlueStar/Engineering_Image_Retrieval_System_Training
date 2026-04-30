@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
@@ -113,19 +115,21 @@ class SingleViewDataset(Dataset):
         return sorted(p for p in self.root.rglob("*") if p.suffix.lower() in ext_set)
 
     def _build_cache(self) -> torch.Tensor:
-        """一次性解碼 + letterbox 為單一連續 uint8 tensor。
+        """一次性解碼 + letterbox 為單一連續 float16 tensor，並行處理。
 
-        - 在 build 時就套用 Letterbox（deterministic），避免 cache 儲存
-          原圖尺寸（在 400 DPI 工程圖上原圖可能 3–15 MB / 張，被 256² 縮放
-          後僅 64 KB / 張，差距 50–200 倍）。
+        - 在 build 時就套用 Letterbox（deterministic）並完成除以 255 的正規化，
+          避免 __getitem__ 每次都做 uint8→float32 型別轉換與除法運算。
+        - 使用 ThreadPoolExecutor 並行讀取與 resize，PIL I/O 釋放 GIL，
+          可有效加速初始化。
         - 單一連續 tensor + ``share_memory_()`` → fork 的 workers 直接
           共享同一塊記憶體，不會被 Python refcount 寫入觸發 CoW 複製。
-        - 回傳形狀 ``[N, C, img_size, img_size]`` 的 ``torch.uint8`` tensor。
+        - 回傳形狀 ``[N, C, img_size, img_size]`` 的 ``torch.float16`` tensor，
+          值域 [0, 1]；記憶體用量為 N*C*img_size²*2 bytes（uint8 的 2 倍）。
         """
         n = len(self.images)
         c = self.in_channels
         s = self.img_size
-        expected_gb = n * c * s * s / 1e9
+        expected_gb = n * c * s * s * 2 / 1e9  # float16 = 2 bytes
         logger.info(
             "SingleViewDataset: 開始 in-RAM 解碼快取 (n=%d, shape=[N,%d,%d,%d], "
             "預期 %.2f GB, root=%s)",
@@ -133,30 +137,42 @@ class SingleViewDataset(Dataset):
         )
         t0 = time.perf_counter()
 
-        cache = torch.empty((n, c, s, s), dtype=torch.uint8)
+        cache = torch.empty((n, c, s, s), dtype=torch.float16)
         log_every = max(1, n // 10)
 
-        for i, path in enumerate(self.images):
-            img = Image.open(path).convert(self._mode)
-            img = self._letterbox(img)  # PIL → letterboxed PIL (s × s)
-            # 用 np.array（非 np.asarray）強制取得可寫副本：PIL 的緩衝區是唯讀，
-            # np.asarray 會共享之並讓 torch.from_numpy 噴 "non-writable tensor"
-            # UserWarning。我們之後會 copy 進 cache[i]，所以提前複製是零額外成本。
-            arr = np.array(img, dtype=np.uint8)  # [H, W] or [H, W, C]
-            if arr.ndim == 2:  # grayscale
-                cache[i, 0] = torch.from_numpy(arr)
-            else:  # RGB
-                # arr [H, W, C] → tensor [C, H, W]
-                cache[i] = torch.from_numpy(arr).permute(2, 0, 1)
+        mode = self._mode
+        letterbox = self._letterbox
 
-            if (i + 1) % log_every == 0 or (i + 1) == n:
-                logger.info("  快取進度: %d/%d (%.0f%%)", i + 1, n, 100.0 * (i + 1) / n)
+        def _load_one(i: int) -> Tuple[int, torch.Tensor]:
+            img = Image.open(self.images[i]).convert(mode)
+            img = letterbox(img)
+            arr = np.array(img, dtype=np.float32)
+            arr /= 255.0
+            t = torch.from_numpy(arr)
+            if t.ndim == 2:  # grayscale [H, W] → [1, H, W]
+                t = t.unsqueeze(0)
+            else:  # RGB [H, W, C] → [C, H, W]
+                t = t.permute(2, 0, 1)
+            return i, t.to(torch.float16)
+
+        max_workers = min(16, os.cpu_count() or 4)
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_load_one, i): i for i in range(n)}
+            for future in concurrent.futures.as_completed(futures):
+                i, t = future.result()
+                cache[i] = t
+                completed += 1
+                if completed % log_every == 0 or completed == n:
+                    logger.info(
+                        "  快取進度: %d/%d (%.0f%%)", completed, n, 100.0 * completed / n
+                    )
 
         cache.share_memory_()  # 跨 worker 真正共享，避免 CoW 倍增
         elapsed = time.perf_counter() - t0
         logger.info(
-            "SingleViewDataset: 快取完成 — %d 張, %.2f GB（單一 share_memory tensor）, 耗時 %.1fs",
-            n, cache.numel() / 1e9, elapsed,
+            "SingleViewDataset: 快取完成 — %d 張, %.2f GB（float16 share_memory tensor）, 耗時 %.1fs",
+            n, cache.numel() * 2 / 1e9, elapsed,
         )
         return cache
 
@@ -165,9 +181,9 @@ class SingleViewDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         if self._cache is not None:
-            # cache hit fast path：直接從共享 uint8 tensor 取 → float [0,1]，
-            # 跳過 PIL.fromarray 與 Letterbox（cache 已經是 letterboxed）
-            return self._cache[idx].to(dtype=torch.float32).div_(255.0)
+            # cache hit fast path：float16 → float32 精度提升，無算術運算
+            # cache 已是 letterboxed 且值域 [0,1]，直接回傳
+            return self._cache[idx].float()
         # 非 cache：原 PIL 路徑
         img = Image.open(self.images[idx]).convert(self._mode)
         return self._transform(img)

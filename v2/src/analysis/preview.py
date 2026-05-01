@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image as PILImage
 
 import matplotlib
 matplotlib.use("Agg")
@@ -51,8 +52,10 @@ from rich.progress import track
 from rich.table import Table
 
 from src.data.logo_removal import remove_logo
-from src.data.preprocessing import binarize, discover_components
+from src.data.preprocessing import apply_crop_postprocess, binarize, discover_components
 from src.data.topology import sort_crops_by_topology
+from src.dataset.dataset import Letterbox
+from src.dataset.transforms import EngineeringDrawingAugmentation
 from src.logger import get_logger
 
 console = Console()
@@ -70,25 +73,9 @@ _CC_COLORS_BGR = [
 _CC_COLORS_RGB = [(r, g, b) for b, g, r in _CC_COLORS_BGR]
 
 
-def letterbox_image(img: np.ndarray, size: int, fill: int = 255) -> np.ndarray:
-    """使用 OpenCV 實現等比例縮放並填充 (Letterboxing)。
-
-    與 dataset.py 的 Letterbox 類別邏輯一致：等比縮放後置中填充白色。
-    """
-    h, w = img.shape[:2]
-    scale = size / max(h, w)
-    nw, nh = int(w * scale), int(h * scale)
-
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-
-    if len(img.shape) == 3:
-        canvas = np.full((size, size, 3), fill, dtype=np.uint8)
-    else:
-        canvas = np.full((size, size), fill, dtype=np.uint8)
-
-    dx, dy = (size - nw) // 2, (size - nh) // 2
-    canvas[dy : dy + nh, dx : dx + nw] = resized
-    return canvas
+def _letterbox_np(img: np.ndarray, size: int, fill: int = 255) -> np.ndarray:
+    """PIL Letterbox → numpy，與 dataset.py Letterbox 完全相同邏輯。"""
+    return np.array(Letterbox(size, fill)(PILImage.fromarray(img)))
 
 
 class PreprocessingPreview:
@@ -264,20 +251,13 @@ class PreprocessingPreview:
 
             pad = self.params.get("padding", 2)
             for i, crop in enumerate(crops):
-                # 反轉為白底黑線（與 _process_one 的 `255 - crop` 一致）
-                inv_crop = 255 - crop
-                padded_crop = cv2.copyMakeBorder(
-                    inv_crop, pad, pad, pad, pad,
-                    cv2.BORDER_CONSTANT, value=255,
-                )
-                stages[f"comp_{i + 1}"] = padded_crop
+                stages[f"comp_{i + 1}"] = apply_crop_postprocess(crop, pad)
 
-            # 訓練輸入：Letterbox（與 dataset.py Letterbox 類別一致）
             if self.params.get("img_size"):
                 size = self.params["img_size"]
                 for i, crop in enumerate(crops):
-                    inv_crop = 255 - crop
-                    resized = letterbox_image(inv_crop, size, fill=255)
+                    postprocessed = apply_crop_postprocess(crop, pad)
+                    resized = _letterbox_np(postprocessed, size)
                     stages[f"resized_{i + 1}"] = resized
                     stages[f"aug_sample_{i + 1}"] = self._simulate_augmentation(resized, size)
 
@@ -311,7 +291,7 @@ class PreprocessingPreview:
 
             if self.params.get("img_size"):
                 size = self.params["img_size"]
-                resized = letterbox_image(padded_current, size, fill=255)
+                resized = _letterbox_np(padded_current, size)
                 stages["resized_full"] = resized
                 stages["aug_sample_full"] = self._simulate_augmentation(resized, size)
 
@@ -320,56 +300,14 @@ class PreprocessingPreview:
         return out_path
 
     def _simulate_augmentation(self, img: np.ndarray, img_size: int) -> np.ndarray:
-        """模擬 GPU 增強管線以供預覽（對應 gpu_transforms.py GPUAugmentation）。
-
-        依照 GPUAugmentation._build_aug() 的增強順序做近似：
-        1. RandomResizedCrop（SimSiam 雙視角的核心）
-        2. Horizontal / Vertical Flip
-        3. RandomAffine（旋轉）
-        4. Salt & Pepper 雜訊（工程圖特化）
-        5. 亮度擾動（代替 Normalize 效果的視覺示意）
-        """
-        rng = random.Random()
-        h, w = img.shape[:2]
-
-        # 1. RandomResizedCrop (scale 0.2–1.0)
-        scale = rng.uniform(0.2, 1.0)
-        crop_h = int(h * scale)
-        crop_w = int(w * scale)
-        x0 = rng.randint(0, max(0, w - crop_w))
-        y0 = rng.randint(0, max(0, h - crop_h))
-        cropped = img[y0 : y0 + crop_h, x0 : x0 + crop_w]
-        aug = cv2.resize(cropped, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
-
-        # 2. Horizontal / Vertical Flip (p=0.5 each)
-        if rng.random() < 0.5:
-            aug = cv2.flip(aug, 1)
-        if rng.random() < 0.5:
-            aug = cv2.flip(aug, 0)
-
-        # 3. RandomAffine (±45°, p=0.3 × 2)
-        if rng.random() < 0.3:
-            angle = rng.uniform(-45, 45)
-            M = cv2.getRotationMatrix2D((img_size // 2, img_size // 2), angle, 1.0)
-            aug = cv2.warpAffine(aug, M, (img_size, img_size), borderValue=255)
-        if rng.random() < 0.3:
-            angle = rng.uniform(-45, 45)
-            M = cv2.getRotationMatrix2D((img_size // 2, img_size // 2), angle, 1.0)
-            aug = cv2.warpAffine(aug, M, (img_size, img_size), borderValue=255)
-
-        # 4. Salt & Pepper (amount 0–2%, p=0.2)
-        if rng.random() < 0.2:
-            amount = rng.uniform(0, 0.02)
-            n_pixels = int(img_size * img_size * amount)
-            xs = np.random.randint(0, img_size, n_pixels)
-            ys = np.random.randint(0, img_size, n_pixels)
-            aug = aug.copy()
-            aug[ys, xs] = np.random.choice([0, 255], n_pixels)
-
-        # 5. 亮度擾動（代替正規化後的值域視覺示意）
-        alpha = rng.uniform(0.85, 1.15)
-        aug = cv2.convertScaleAbs(aug, alpha=alpha, beta=0)
-        return aug
+        """以 EngineeringDrawingAugmentation 生成增強視角（與訓練 CPU 增強路徑完全相同）。"""
+        aug = EngineeringDrawingAugmentation(
+            img_size=img_size, mean=(0.5,), std=(0.5,), use_augmentation=True,
+        )
+        pil = PILImage.fromarray(img)
+        tensor, _ = aug(pil)
+        arr = (tensor.squeeze(0).numpy() * 0.5 + 0.5) * 255
+        return np.clip(arr, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------ #
     # CC extraction with visualisation

@@ -253,15 +253,9 @@ def _process_one(
         h, w = gray.shape
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        pad = cfg["padding"]
         for i, crop in enumerate(crops):
-            # crop 預設是 255 為特徵，0 為背景。我們反轉為白底黑線
-            inv_crop = 255 - crop
-            # 加上純白邊框 padding
-            pad = cfg["padding"]
-            padded_crop = cv2.copyMakeBorder(
-                inv_crop, pad, pad, pad, pad, 
-                cv2.BORDER_CONSTANT, value=255
-            )
+            padded_crop = apply_crop_postprocess(crop, pad)
             cv2.imwrite(str(out_dir / f"comp_{i:03d}.png"), padded_crop)
 
     else:
@@ -453,6 +447,15 @@ def discover_components(
         })
 
     return results
+
+
+def apply_crop_postprocess(crop: np.ndarray, padding: int) -> np.ndarray:
+    """反轉為白底黑線並加純白邊框（與 _process_one 後處理邏輯相同）。"""
+    inv_crop = 255 - crop
+    return cv2.copyMakeBorder(
+        inv_crop, padding, padding, padding, padding,
+        cv2.BORDER_CONSTANT, value=255,
+    )
 
 
 def extract_crops(

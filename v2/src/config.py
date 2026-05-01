@@ -175,7 +175,9 @@ class TrainingConfig:
     grad_clip: float = 1.0
     use_augmentation: bool = True
     use_gpu_augmentation: bool = True
-    cache_in_memory: bool = False  # 將整個訓練/驗證集解碼後常駐 RAM，消除每 epoch I/O
+    cache_in_memory: bool = False  # 向下相容；True → cache_mode="full"，False 不影響 cache_mode
+    cache_mode: str = "auto"  # "auto" | "full" | "partitioned" | "none"
+    cache_memory_fraction: float = 0.6  # auto/partitioned 模式下，可用 RAM 的最大使用比例
     channels_last: bool = False  # 模型與輸入採用 NHWC 記憶體格式（Ampere+ AMP 加速）
     resume: bool = True
     max_batches: Optional[int] = None  # 用於測試，限制每 epoch 的 batch 數

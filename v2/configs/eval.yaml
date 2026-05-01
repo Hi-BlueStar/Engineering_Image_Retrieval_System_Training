@@ -17,7 +17,7 @@
 # ------------------------------------------------------------------------------
 eval:
   # 必填：訓練產生的 checkpoint 路徑（可用 CLI override 覆寫）
-  checkpoint_path: "outputs/simsiam_exp/Run_01_Seed_42/checkpoints/checkpoint_best.pth"
+  checkpoint_path: "outputs/simsiam_exp_20260429_112325/Run_01_Seed_42/checkpoints/checkpoint_best.pth"
 
   # 原始轉檔標籤資料（無任何前處理）
   labeled_data_path: "data/converted_labeled_images"
@@ -30,10 +30,10 @@ eval:
 
   # 特徵提取設定
   batch_size: 64
-  num_workers: 4
+  num_workers: 16
 
   # Precision@K 的 K 值列表
-  top_k_values: [1, 5, 10, 20, 40, 80]
+  top_k_values: [1, 5, 10, 20, 40, 80, 160, 320, 640, 1280]
 
 # ------------------------------------------------------------------------------
 # 模型設定 — 必須與 checkpoint 完全一致

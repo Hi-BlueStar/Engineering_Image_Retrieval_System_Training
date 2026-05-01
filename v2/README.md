@@ -182,6 +182,13 @@ uv run python v2/train.py --config v2/configs/default.yaml \
     training.batch_size=32
 ```
 
+### 3.4 評估與驗證
+
+```bash
+# 評估
+uv run python v2/evaluate.py --config v2/configs/eval.yaml --checkpoint_path outputs/simsiam_exp_{{Date}}/Run_01_Seed_42/checkpoints/checkpoint_best.pth
+```
+
 ### 3.4 查看結果
 
 訓練完成後，結果會儲存在 `outputs/` 目錄：

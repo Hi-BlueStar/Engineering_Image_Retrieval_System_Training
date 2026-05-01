@@ -58,23 +58,29 @@ class LabeledImageDataset(Dataset):
         ext_set = {e.lower() for e in (img_exts or list(_IMG_EXTS))}
         self._mode = "L" if in_channels == 1 else "RGB"
 
-        # 發現類別
-        class_dirs = sorted(d for d in self.root.iterdir() if d.is_dir())
-        if not class_dirs:
-            raise ValueError(f"LabeledImageDataset: 根目錄無類別子目錄: {root}")
+        # 掃描所有影像
+        image_paths: List[Path] = []
+        for p in self.root.rglob("*"):
+            if p.is_file() and p.suffix.lower() in ext_set:
+                image_paths.append(p)
 
-        self.classes: List[str] = [d.name for d in class_dirs]
+        if not image_paths:
+            raise ValueError(f"LabeledImageDataset: 根目錄下找不到支援的影像: {root}")
+
+        # 以影像的父目錄名稱作為類別名稱（自動適應巢狀結構）
+        self.classes: List[str] = sorted(list(set(p.parent.name for p in image_paths)))
         self.class_to_idx: Dict[str, int] = {
             c: i for i, c in enumerate(self.classes)
         }
 
-        # 掃描所有影像
+        # 建立 samples
         self.samples: List[Tuple[Path, int]] = []
-        for class_dir in class_dirs:
-            label = self.class_to_idx[class_dir.name]
-            for p in sorted(class_dir.rglob("*")):
-                if p.suffix.lower() in ext_set:
-                    self.samples.append((p, label))
+        for p in image_paths:
+            label = self.class_to_idx[p.parent.name]
+            self.samples.append((p, label))
+
+        # 排序以確保重現性
+        self.samples.sort(key=lambda x: (x[1], x[0].name))
 
         mean = [0.5] * in_channels
         std = [0.5] * in_channels

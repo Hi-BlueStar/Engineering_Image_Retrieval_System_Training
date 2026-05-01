@@ -17,7 +17,7 @@ data:
   # --- 壓縮檔設定 ---
   raw_zip_path: "data/PDF.zip" # 訓練用原始壓縮檔路徑
   labeled_zip_path: "data/吉輔提供資料.zip" # 評估用標註壓縮檔路徑
-  skip_extraction: false
+  skip_extraction: true
 
   # --- PDF 轉換 ---
   raw_pdf_dir: "data/raw_pdfs"
@@ -26,7 +26,7 @@ data:
   converted_labeled_image_dir: "data/converted_labeled_images"
   pdf_dpi: 400
   pdf_max_workers: 16
-  skip_pdf_conversion: false
+  skip_pdf_conversion: true
 
   # --- 影像前處理 ---
   preprocessed_image_dir: "data/preprocessed_images"
@@ -35,7 +35,7 @@ data:
   preprocess_max_bbox_ratio: 0.7
   preprocess_min_bbox_area: 100000
   preprocess_padding: 2
-  preprocess_max_workers: 12
+  preprocess_max_workers: 24
   skip_preprocessing: false
   skip_labeled_preprocessing: false
 

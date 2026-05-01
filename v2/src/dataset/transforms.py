@@ -44,7 +44,7 @@ class EngineeringDrawingAugmentation:
                 T.RandomResizedCrop(img_size, scale=(0.2, 1.0), ratio=(0.75, 1.333)),
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
-                T.RandomApply([T.RandomRotation(degrees=30)], p=0.5),
+                T.RandomApply([T.RandomRotation(degrees=30, fill=255)], p=0.5),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

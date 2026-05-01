@@ -81,6 +81,8 @@ class EDAAnalyzer:
         output_dir: 分析結果輸出目錄。
         sample_n: 像素強度分析的取樣數量。
         cc_sample_n: 連通元件分析的取樣數量。
+        max_bbox_ratio: 排除大於整張圖一定比例的外接矩形元件（對應 DataConfig.preprocess_max_bbox_ratio）。
+        use_topology_analysis: 是否啟用拓撲分析（目前 EDA 僅計數，保留旗標供未來擴展）。
         seed: 隨機種子。
     """
 
@@ -93,6 +95,8 @@ class EDAAnalyzer:
         remove_logo: bool = False,
         logo_template_path: Optional[str] = None,
         logo_mask_region: Optional[List[float]] = None,
+        max_bbox_ratio: float = 0.9,
+        use_topology_analysis: bool = True,
         use_topology_pruning: bool = True,
         topology_pruning_iters: int = 3,
         topology_pruning_ksize: int = 2,
@@ -109,6 +113,8 @@ class EDAAnalyzer:
         self.remove_logo = remove_logo
         self.logo_template_path = logo_template_path
         self.logo_mask_region = logo_mask_region
+        self.max_bbox_ratio = max_bbox_ratio
+        self.use_topology_analysis = use_topology_analysis
         self.use_topology_pruning = use_topology_pruning
         self.topology_pruning_iters = topology_pruning_iters
         self.topology_pruning_ksize = topology_pruning_ksize
@@ -247,10 +253,11 @@ class EDAAnalyzer:
         sample = images if len(images) <= self.cc_sample_n else self._rng.sample(images, self.cc_sample_n)
         cc_counts = []
         
-        # 準備並行計算參數
+        # 準備並行計算參數（對應 prepare_data.py 的 PreprocessConfig 設定）
+        # top_n=0 表示保留所有元件（discover_components 中 top_n>0 才截斷）
         cc_cfg = {
-            "top_n": 999,
-            "max_bbox_ratio": 0.9,
+            "top_n": 0,
+            "max_bbox_ratio": self.max_bbox_ratio,
             "min_bbox_area": self.min_bbox_area,
             "padding": 0,
             "remove_logo_cfg": self.remove_logo,

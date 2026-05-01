@@ -58,6 +58,8 @@ def cmd_eda(args: argparse.Namespace, cfg: AppConfig) -> None:
         remove_logo=cfg.data.remove_gifu_logo,
         logo_template_path=cfg.data.logo_template_path,
         logo_mask_region=cfg.data.logo_mask_region,
+        max_bbox_ratio=cfg.data.preprocess_max_bbox_ratio,
+        use_topology_analysis=cfg.data.use_topology_analysis,
         use_topology_pruning=cfg.data.use_topology_pruning,
         topology_pruning_iters=cfg.data.topology_pruning_iters,
         topology_pruning_ksize=cfg.data.topology_pruning_ksize,

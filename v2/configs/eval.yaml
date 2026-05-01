@@ -26,7 +26,7 @@ eval:
   preprocessed_labeled_data_path: "data/preprocessed_labeled_images"
 
   # JSON 結果輸出路徑
-  output_path: "outputs/eval_results.json"
+  output_path: "outputs/evaluate/eval_results.json"
 
   # 特徵提取設定
   batch_size: 64

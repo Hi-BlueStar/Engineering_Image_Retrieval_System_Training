@@ -192,7 +192,8 @@ uv run python v2/evaluate.py --config v2/configs/eval.yaml
 繪製報表：
 
 ```bash
-uv run python v2/scripts/plot_academic_retrieval_analysis.py --dummy --output outputs/dummy_redesign.pdf
+uv run python v2/scripts/plot_academic_charts.py --input <你的CSV路徑> --output_dir results/figures
+
 ```
 
 ### 3.4 查看結果

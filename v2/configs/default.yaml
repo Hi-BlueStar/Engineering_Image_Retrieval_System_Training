@@ -84,9 +84,11 @@ training:
   batch_size: 128
   lr: 2.0e-5
   weight_decay: 1.0e-5
-  num_workers: 4 # cache_in_memory=true 下無 disk I/O 與解碼，4 個 worker 已綽綽有餘（過多反而增加 fork/IPC 成本）
-  prefetch_factor: 2 # cache 模式下每 batch 只是 float16→float32 精度提升，無算術；FP32 batch 可達 32MB+，過大 prefetch 會吃 pinned RAM
-  cache_in_memory: true # 高階硬體一次性把資料集 letterbox 後存成單一 share_memory float16 tensor；用量精準等於 N*C*img_size²*2 bytes
+  num_workers: 4 # cache 模式下無 disk I/O，4 個 worker 已足夠；過多反而增加 fork/IPC 成本
+  prefetch_factor: 2 # float16→float32 upcast 快取路徑每 batch ~32MB，過大 prefetch 會吃 pinned RAM
+  cache_in_memory: false # 已由 cache_mode 取代；保留以向下相容（true → 強制 full mode）
+  cache_mode: "auto" # "auto"（依可用 RAM 自動選擇）| "full" | "partitioned" | "none"
+  cache_memory_fraction: 0.6 # auto/partitioned 模式下，可用 RAM 的最大使用比例（0.0–1.0）
   channels_last: true # NHWC 記憶體格式，AMP + Ampere 上 ResNet 額外 +10–20%
   img_exts:
     - ".jpg"

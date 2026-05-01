@@ -3,10 +3,15 @@
 ============================================================
 隨機抽取 N 張原始影像，按順序套用前處理步驟，生成對照圖：
 
-    [ 原始圖 ] → [ Logo 移除後 ] → [ 二值化遮罩 ] → [ CC 偵測結果 ] → [ 最終預處理變體 ]
+    [連通元件模式]
+    原始 → 二值化 → CC 偵測 + Logo 過濾 → 各元件（含 Padding）
+    → 訓練輸入（Letterbox）→ 增強示意
 
-使用 matplotlib 輸出多格對照 PNG，方便在正式批次處理前評估
-參數設定效果。支援直接修改 ``params`` 字典進行快速實驗。
+    [全圖模式 (use_connected_components=False)]
+    原始 → 二值化（視覺參考）→ 前處理後影像（含 Logo 移除）
+    → 最終完整影像（含 Padding）→ 訓練輸入（Letterbox）→ 增強示意
+
+前處理參數完全對應 prepare_data.py 的 PreprocessConfig。
 ============================================================
 """
 
@@ -35,7 +40,7 @@ if _FONT_PATH.exists():
         font_manager.fontManager.addfont(str(_FONT_PATH))
         prop = font_manager.FontProperties(fname=str(_FONT_PATH))
         matplotlib.rcParams["font.family"] = prop.get_name()
-        matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
+        matplotlib.rcParams["axes.unicode_minus"] = False
     except Exception as e:
         from src.logger import get_logger
         get_logger(__name__).warning("無法載入自訂字體 %s: %s", _FONT_PATH, e)
@@ -45,7 +50,6 @@ from rich.panel import Panel
 from rich.progress import track
 from rich.table import Table
 
-from src.config import AppConfig
 from src.data.logo_removal import remove_logo
 from src.data.preprocessing import binarize, discover_components
 from src.data.topology import sort_crops_by_topology
@@ -67,21 +71,21 @@ _CC_COLORS_RGB = [(r, g, b) for b, g, r in _CC_COLORS_BGR]
 
 
 def letterbox_image(img: np.ndarray, size: int, fill: int = 255) -> np.ndarray:
-    """使用 OpenCV 實現等比例縮放並填充 (Letterboxing)。"""
+    """使用 OpenCV 實現等比例縮放並填充 (Letterboxing)。
+
+    與 dataset.py 的 Letterbox 類別邏輯一致：等比縮放後置中填充白色。
+    """
     h, w = img.shape[:2]
     scale = size / max(h, w)
     nw, nh = int(w * scale), int(h * scale)
 
-    # 縮放影像
     resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
 
-    # 建立畫布
     if len(img.shape) == 3:
         canvas = np.full((size, size, 3), fill, dtype=np.uint8)
     else:
         canvas = np.full((size, size), fill, dtype=np.uint8)
 
-    # 置中貼上
     dx, dy = (size - nw) // 2, (size - nh) // 2
     canvas[dy : dy + nh, dx : dx + nw] = resized
     return canvas
@@ -90,11 +94,17 @@ def letterbox_image(img: np.ndarray, size: int, fill: int = 255) -> np.ndarray:
 class PreprocessingPreview:
     """前處理管線視覺化工具。
 
+    前處理邏輯完全對應 ``prepare_data.py`` 的 PreprocessConfig 流程：
+    - ``use_connected_components=True``：binarize → discover_components（含 logo 過濾）
+      → (可選) sort_crops_by_topology → 裁切元件 → Letterbox
+    - ``use_connected_components=False``：(可選) remove_logo → (可選) topology_guided_mask
+      → Letterbox
+
     Args:
-        input_dir: 原始影像目錄。
+        input_dir: 原始影像目錄（對應 converted_image_dir）。
         n_samples: 隨機抽取的影像數。
         output_dir: 預覽圖輸出目錄。
-        params: 前處理參數字典（覆蓋預設值）。
+        params: 前處理參數字典，鍵名對應 DataConfig 欄位（由 analyze_data.py 傳入）。
         seed: 隨機種子。
         figure_dpi: 輸出圖片 DPI。
     """
@@ -116,8 +126,6 @@ class PreprocessingPreview:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.seed = seed
         self.figure_dpi = figure_dpi
-
-        # params 由外部傳入（通常在 analyze_data.py 中從 AppConfig 構建）
         self.params = params or {}
 
     # ------------------------------------------------------------------ #
@@ -136,21 +144,18 @@ class PreprocessingPreview:
             return
 
         rng = random.Random(self.seed)
-        
+
         selected_ids: List[Path] = []
         if self.image_ids:
             selected_ids = [
-                img for img in images 
+                img for img in images
                 if img.stem in self.image_ids or img.name in self.image_ids
             ]
-            
-            # 檢查是否有指定的 ID 沒被找到
             found_ids = {img.stem for img in selected_ids} | {img.name for img in selected_ids}
             missing_ids = set(self.image_ids) - found_ids
             if missing_ids:
                 logger.warning("以下指定 ID 未找到對應影像: %s", missing_ids)
 
-        # 從剩餘影像中隨機取樣
         remaining_images = [img for img in images if img not in selected_ids]
         random_samples = []
         if self.n_samples > 0 and remaining_images:
@@ -177,7 +182,7 @@ class PreprocessingPreview:
         logger.info("Preprocessing preview finished. %d images saved to %s", len(saved), self.output_dir)
 
     # ------------------------------------------------------------------ #
-    # Per-image pipeline
+    # Per-image pipeline（與 preprocessing._process_one 邏輯對應）
     # ------------------------------------------------------------------ #
 
     def _preview_one(self, img_path: Path, idx: int) -> Optional[Path]:
@@ -187,19 +192,20 @@ class PreprocessingPreview:
             return None
 
         stages: Dict[str, Any] = {}
+        labels_info: List[Dict] = []
 
-        # Stage 0: Original
+        # Stage 0: 原始影像
         stages["original"] = gray.copy()
 
-        # Stage 1: Binarization (Otsu)
+        # Stage 1: Otsu 二值化（供視覺參考；非 CC 模式的實際管線不做二值化）
         binary = binarize(gray)
         stages["binary"] = binary.copy()
 
-        # Stage 2: CC and Logo filtering
         crops: List[np.ndarray] = []
-        labels_info: List[Dict] = []
-        
+
         if self.params.get("use_connected_components"):
+            # ── CC 模式：與 _process_one 中 use_connected_components=True 路徑一致 ──
+            # discover_components 內部處理 logo 過濾與拓撲剪枝
             cc_vis, comps_info = self._extract_cc_vis(binary)
             stages["cc_detection"] = cc_vis
             crops = [c["crop"] for c in comps_info]
@@ -210,40 +216,31 @@ class PreprocessingPreview:
                     "area": c["area"],
                     "is_complex": c.get("is_complex", False),
                     "n_holes": c.get("n_holes", 0),
-                    "color": tuple(channel / 255.0 for channel in color_rgb),
+                    "color": tuple(ch / 255.0 for ch in color_rgb),
                 })
-                
-            # 建立每次剪枝的預覽圖
+
+            # 拓撲剪枝歷史視覺化（對應 topology_preserving_pruning 的 history）
             if self.params.get("use_topology_pruning"):
-                max_history = 0
-                for c in comps_info:
-                    history = c.get("crop_history", [])
-                    max_history = max(max_history, len(history))
-                
+                max_history = max((len(c.get("crop_history", [])) for c in comps_info), default=0)
                 h, w = gray.shape
-                for i in range(max_history):
+                for step_i in range(max_history):
                     iter_canvas = np.zeros((h, w), dtype=np.uint8)
                     for c in comps_info:
                         hist = c.get("crop_history", [])
-                        crop_state = hist[i] if i < len(hist) else c["crop"]
-                        
+                        crop_state = hist[step_i] if step_i < len(hist) else c["crop"]
                         x1, y1, x2, y2 = c["bbox"]
                         px1, py1 = max(0, x1), max(0, y1)
                         px2, py2 = min(w, x2), min(h, y2)
-                        
-                        cw_start = 0 if x1 >= 0 else -x1
-                        ch_start = 0 if y1 >= 0 else -y1
-                        cw_end = cw_start + (px2 - px1)
-                        ch_end = ch_start + (py2 - py1)
-                        
+                        cw_s = 0 if x1 >= 0 else -x1
+                        ch_s = 0 if y1 >= 0 else -y1
                         iter_canvas[py1:py2, px1:px2] = np.maximum(
                             iter_canvas[py1:py2, px1:px2],
-                            crop_state[ch_start:ch_end, cw_start:cw_end]
+                            crop_state[ch_s : ch_s + (py2 - py1), cw_s : cw_s + (px2 - px1)],
                         )
-                    
-                    stages[f"pruning_iter_{i+1}"] = iter_canvas
+                    stages[f"pruning_iter_{step_i + 1}"] = iter_canvas
         else:
-            # Non-CC pipeline
+            # ── 全圖模式：與 _process_one 中 use_connected_components=False 路徑一致 ──
+            # 對灰階影像做 logo 移除（非對二值化影像）
             current = gray.copy()
             if self.params.get("remove_gifu_logo"):
                 current = remove_logo(
@@ -252,10 +249,13 @@ class PreprocessingPreview:
                     mask_region=self.params.get("logo_mask_region"),
                     fill_value=255,
                 )
-            stages["cc_detection"] = current
+            # 以 "preprocessed_gray" 鍵儲存（避免與 CC 模式的 "cc_detection" 混淆）
+            stages["preprocessed_gray"] = current
+            # crops 維持空列表，後續進入 fallback 路徑
 
-        # Stage 4: Component Extraction
+        # ── 有 crops（CC 模式且找到元件）──
         if crops:
+            # 依拓撲複雜度排序（對應 prepare_data.py 中 use_topology_analysis 的排序步驟）
             if self.params.get("use_topology_analysis"):
                 try:
                     crops = sort_crops_by_topology(crops)
@@ -264,32 +264,27 @@ class PreprocessingPreview:
 
             pad = self.params.get("padding", 2)
             for i, crop in enumerate(crops):
+                # 反轉為白底黑線（與 _process_one 的 `255 - crop` 一致）
                 inv_crop = 255 - crop
                 padded_crop = cv2.copyMakeBorder(
-                    inv_crop, pad, pad, pad, pad, 
-                    cv2.BORDER_CONSTANT, value=255
+                    inv_crop, pad, pad, pad, pad,
+                    cv2.BORDER_CONSTANT, value=255,
                 )
-                stages[f"comp_{i+1}"] = padded_crop
+                stages[f"comp_{i + 1}"] = padded_crop
 
-            # Stage 5: SimSiam Resize (The final online step)
+            # 訓練輸入：Letterbox（與 dataset.py Letterbox 類別一致）
             if self.params.get("img_size"):
                 size = self.params["img_size"]
-                # Use the last crop (or the only one if top_n=1) for resize preview
-                # In SimSiam v2, each crop becomes an independent training sample
                 for i, crop in enumerate(crops):
                     inv_crop = 255 - crop
-                    # 改用 letterbox_image 保留比例
                     resized = letterbox_image(inv_crop, size, fill=255)
-                    stages[f"resized_{i+1}"] = resized
-                    
-                    # 模擬一次數據增強 (隨機旋轉/Jitter 等)
-                    # 這裡僅作視覺示意，實際訓練增強在 GPU 上隨機發生
-                    aug_sample = self._simulate_augmentation(resized)
-                    stages[f"aug_sample_{i+1}"] = aug_sample
+                    stages[f"resized_{i + 1}"] = resized
+                    stages[f"aug_sample_{i + 1}"] = self._simulate_augmentation(resized, size)
+
         else:
-            # Fallback for no CCs
+            # ── Fallback：CC 模式但無元件，或全圖模式 ──
             if self.params.get("use_connected_components"):
-                # CC 模式但沒找到元件：使用原始灰階影像（視需求移除 Logo）
+                # CC 模式找不到任何元件：仍對灰階影像做 logo 移除後呈現全圖
                 current = gray.copy()
                 if self.params.get("remove_gifu_logo"):
                     current = remove_logo(
@@ -299,47 +294,80 @@ class PreprocessingPreview:
                         fill_value=255,
                     )
             else:
-                # 非 CC 模式：stages["cc_detection"] 已經是處理過的灰階影像
-                current = stages["cc_detection"]
+                # 全圖模式：直接使用已處理的 preprocessed_gray
+                current = stages["preprocessed_gray"]
 
+            # 拓撲感知遮罩（全圖模式，與 _process_one 的 topology_guided_mask 對應）
             if self.params.get("use_topology_analysis"):
                 from src.data.topology import topology_guided_mask
                 current = topology_guided_mask(current)
-                
+
             pad = self.params.get("padding", 2)
             padded_current = cv2.copyMakeBorder(
-                current, pad, pad, pad, pad, 
-                cv2.BORDER_CONSTANT, value=255
+                current, pad, pad, pad, pad,
+                cv2.BORDER_CONSTANT, value=255,
             )
             stages["full_image"] = padded_current
 
-            # Stage 5: SimSiam Resize (The final online step)
             if self.params.get("img_size"):
                 size = self.params["img_size"]
-                # 改用 letterbox_image 保留比例
                 resized = letterbox_image(padded_current, size, fill=255)
                 stages["resized_full"] = resized
-                
-                # 模擬一次數據增強
-                aug_sample = self._simulate_augmentation(resized)
-                stages["aug_sample_full"] = aug_sample
+                stages["aug_sample_full"] = self._simulate_augmentation(resized, size)
 
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
         self._generate_figure(img_path, stages, labels_info, out_path)
         return out_path
 
-    def _simulate_augmentation(self, img: np.ndarray) -> np.ndarray:
-        """模擬簡單的數據增強以供預覽。"""
-        # 簡單隨機旋轉與亮度調整
+    def _simulate_augmentation(self, img: np.ndarray, img_size: int) -> np.ndarray:
+        """模擬 GPU 增強管線以供預覽（對應 gpu_transforms.py GPUAugmentation）。
+
+        依照 GPUAugmentation._build_aug() 的增強順序做近似：
+        1. RandomResizedCrop（SimSiam 雙視角的核心）
+        2. Horizontal / Vertical Flip
+        3. RandomAffine（旋轉）
+        4. Salt & Pepper 雜訊（工程圖特化）
+        5. 亮度擾動（代替 Normalize 效果的視覺示意）
+        """
+        rng = random.Random()
         h, w = img.shape[:2]
-        center = (w // 2, h // 2)
-        angle = random.uniform(-15, 15)
-        scale = random.uniform(0.9, 1.1)
-        M = cv2.getRotationMatrix2D(center, angle, scale)
-        aug = cv2.warpAffine(img, M, (w, h), borderValue=255)
-        
-        # 亮度調整
-        alpha = random.uniform(0.8, 1.2)
+
+        # 1. RandomResizedCrop (scale 0.2–1.0)
+        scale = rng.uniform(0.2, 1.0)
+        crop_h = int(h * scale)
+        crop_w = int(w * scale)
+        x0 = rng.randint(0, max(0, w - crop_w))
+        y0 = rng.randint(0, max(0, h - crop_h))
+        cropped = img[y0 : y0 + crop_h, x0 : x0 + crop_w]
+        aug = cv2.resize(cropped, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
+
+        # 2. Horizontal / Vertical Flip (p=0.5 each)
+        if rng.random() < 0.5:
+            aug = cv2.flip(aug, 1)
+        if rng.random() < 0.5:
+            aug = cv2.flip(aug, 0)
+
+        # 3. RandomAffine (±45°, p=0.3 × 2)
+        if rng.random() < 0.3:
+            angle = rng.uniform(-45, 45)
+            M = cv2.getRotationMatrix2D((img_size // 2, img_size // 2), angle, 1.0)
+            aug = cv2.warpAffine(aug, M, (img_size, img_size), borderValue=255)
+        if rng.random() < 0.3:
+            angle = rng.uniform(-45, 45)
+            M = cv2.getRotationMatrix2D((img_size // 2, img_size // 2), angle, 1.0)
+            aug = cv2.warpAffine(aug, M, (img_size, img_size), borderValue=255)
+
+        # 4. Salt & Pepper (amount 0–2%, p=0.2)
+        if rng.random() < 0.2:
+            amount = rng.uniform(0, 0.02)
+            n_pixels = int(img_size * img_size * amount)
+            xs = np.random.randint(0, img_size, n_pixels)
+            ys = np.random.randint(0, img_size, n_pixels)
+            aug = aug.copy()
+            aug[ys, xs] = np.random.choice([0, 255], n_pixels)
+
+        # 5. 亮度擾動（代替正規化後的值域視覺示意）
+        alpha = rng.uniform(0.85, 1.15)
         aug = cv2.convertScaleAbs(aug, alpha=alpha, beta=0)
         return aug
 
@@ -351,10 +379,13 @@ class PreprocessingPreview:
         self,
         binary: np.ndarray,
     ) -> Tuple[np.ndarray, List[dict]]:
-        """Run CC analysis using shared logic and return coloured visualisation + components info."""
+        """呼叫 discover_components（與 prepare_data.py 使用的相同函式）並生成彩色視覺化。
+
+        參數完全對應 preprocessing._process_one 傳入 extract_crops 的參數。
+        """
         comps = discover_components(
             binary,
-            top_n=self.params.get("top_n", 5),
+            top_n=self.params.get("top_n", 0),
             max_bbox_ratio=self.params.get("max_bbox_ratio", 0.9),
             min_bbox_area=self.params.get("min_bbox_area", 0),
             padding=self.params.get("padding", 2),
@@ -362,15 +393,16 @@ class PreprocessingPreview:
             logo_template_path=self.params.get("logo_template_path"),
             logo_mask_region=self.params.get("logo_mask_region"),
             use_topology_pruning=self.params.get("use_topology_pruning", True),
+            topology_pruning_iters=self.params.get("topology_pruning_iters", 3),
+            topology_pruning_ksize=self.params.get("topology_pruning_ksize", 2),
             min_simple_area=self.params.get("min_simple_area", 40),
         )
 
         vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
-        
+
         for rank, c in enumerate(comps):
             x1, y1, x2, y2 = c["bbox"]
             color_rgb = _CC_COLORS_RGB[rank % len(_CC_COLORS_RGB)]
-            
             cv2.rectangle(vis, (x1, y1), (x2, y2), color_rgb, 2)
             cv2.putText(
                 vis,
@@ -396,32 +428,31 @@ class PreprocessingPreview:
         labels_info: List[Dict],
         out_path: Path,
     ) -> None:
-        stage_labels = {
+        stage_labels: Dict[str, str] = {
             "original": "原始影像",
-            "binary": "二值化遮罩",
+            "binary": "二值化遮罩 (Otsu)",
             "cc_detection": "CC 偵測 (含 Logo 過濾)",
+            # 全圖模式下 logo 移除後的灰階影像
+            "preprocessed_gray": "前處理後影像 (Logo 移除)",
             "full_image": "最終完整影像 (含 Padding)",
+            "resized_full": f"訓練輸入 (Letterbox {self.params.get('img_size', '?')}px)",
+            "aug_sample_full": "增強示意 (SimSiam 雙視角之一)",
         }
-        for i in range(10):
-            stage_labels[f"pruning_iter_{i+1}"] = f"拓撲剪枝 Iter {i+1}"
-            stage_labels[f"comp_{i+1}"] = f"元件 {i+1} (含 Padding)"
-            stage_labels[f"resized_{i+1}"] = f"訓練輸入 {i+1} (等比例)"
-            stage_labels[f"aug_sample_{i+1}"] = f"增強示意 {i+1}"
-        
-        stage_labels["resized_full"] = f"訓練輸入 (等比例)"
-        stage_labels["aug_sample_full"] = "增強示意 (隨機)"
+        for i in range(20):
+            stage_labels[f"pruning_iter_{i + 1}"] = f"拓撲剪枝 Iter {i + 1}"
+            stage_labels[f"comp_{i + 1}"] = f"元件 {i + 1} (含 Padding)"
+            stage_labels[f"resized_{i + 1}"] = f"訓練輸入 {i + 1} (Letterbox)"
+            stage_labels[f"aug_sample_{i + 1}"] = f"增強示意 {i + 1}"
 
         n = len(stages)
-        # 動態計算排版：最多 4 行，超過則折行
         cols = min(n, 4)
         rows = (n + cols - 1) // cols
         fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4.5 * rows))
-        
-        # 確保 axes 是 1D array
+
         if n == 1:
             axes_flat = [axes]
         elif rows == 1 or cols == 1:
-            axes_flat = axes
+            axes_flat = list(axes) if hasattr(axes, "__iter__") else [axes]
         else:
             axes_flat = axes.flatten()
 
@@ -438,7 +469,6 @@ class PreprocessingPreview:
             ax.set_title(stage_labels.get(key, key), fontsize=9, pad=4)
             ax.axis("off")
 
-            # Add CC legend patches on cc_detection panel
             if key == "cc_detection" and labels_info:
                 patches = [
                     mpatches.Patch(
@@ -449,7 +479,6 @@ class PreprocessingPreview:
                 ]
                 ax.legend(handles=patches, fontsize=6, loc="lower right", framealpha=0.7)
 
-        # 隱藏多餘的 axes
         for ax in axes_flat[n:]:
             ax.axis("off")
 
@@ -460,12 +489,14 @@ class PreprocessingPreview:
             y=1.02 if rows == 1 else 1.05,
         )
 
-        # Parameter box
+        # 參數標注（對應 prepare_data.py PreprocessConfig 欄位）
         param_lines = [
-            f"top_n={self.params['top_n']}",
-            f"use_cc={self.params['use_connected_components']}",
-            f"use_topo={self.params['use_topology_analysis']}",
+            f"top_n={self.params.get('top_n', 0)}",
+            f"use_cc={self.params.get('use_connected_components', True)}",
+            f"use_topo={self.params.get('use_topology_analysis', True)}",
             f"use_pruning={self.params.get('use_topology_pruning', True)}",
+            f"pruning_iters={self.params.get('topology_pruning_iters', 3)}",
+            f"pruning_ksize={self.params.get('topology_pruning_ksize', 2)}",
         ]
         fig.text(
             0.01, -0.01,
@@ -484,19 +515,12 @@ class PreprocessingPreview:
     # ------------------------------------------------------------------ #
 
     def _print_header(self, total_images: int, total_samples: int, n_specified: int = 0, n_random: int = 0) -> None:
-        param_table = Table(show_header=False, box=None, padding=(0, 1))
-        param_table.add_column("param", style="cyan")
-        param_table.add_column("value", style="white")
-        for k, v in self.params.items():
-            if v is not None:
-                param_table.add_row(k, str(v))
-
         sample_info = []
         if n_specified > 0:
             sample_info.append(f"指定 ID: [yellow]{n_specified}[/yellow] 張")
         if n_random > 0:
             sample_info.append(f"隨機取樣: [yellow]{n_random}[/yellow] 張")
-        
+
         info_str = " + ".join(sample_info) if sample_info else "無取樣"
 
         console.print(
@@ -505,7 +529,8 @@ class PreprocessingPreview:
                 f"[bold]輸出目錄:[/bold] [cyan]{self.output_dir}[/cyan]\n"
                 f"[bold]總影像數:[/bold] [green]{total_images:,}[/green]  "
                 f"→  預覽共 [yellow]{total_samples}[/yellow] 張 ({info_str})\n\n"
-                "[bold]前處理參數:[/bold]\n" + "\n".join(f"  {k} = {v}" for k, v in self.params.items() if v is not None),
+                "[bold]前處理參數 (對應 prepare_data.py PreprocessConfig):[/bold]\n"
+                + "\n".join(f"  {k} = {v}" for k, v in self.params.items() if v is not None),
                 title="[bold blue] 前處理管線預覽",
                 border_style="blue",
             )

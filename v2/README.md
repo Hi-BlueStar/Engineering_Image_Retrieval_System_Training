@@ -189,6 +189,17 @@ uv run python v2/train.py --config v2/configs/default.yaml \
 uv run python v2/evaluate.py --config v2/configs/eval.yaml --checkpoint_path outputs/simsiam_exp_{{Date}}/Run_01_Seed_42/checkpoints/checkpoint_best.pth
 ```
 
+繪製報表：
+
+```bash
+python3 v2/scripts/plot_academic_retrieval_analysis.py \
+    --csv outputs/your_results.csv \
+    --score_col similarity_score \
+    --label_col is_tp \
+    --output outputs/academic_chart.pdf
+
+```
+
 ### 3.4 查看結果
 
 訓練完成後，結果會儲存在 `outputs/` 目錄：

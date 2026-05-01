@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import csv
+import random
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -34,6 +36,7 @@ def evaluate_model(
     top_k_values: List[int] = (1, 5, 10),
     batch_size: int = 64,
     num_workers: int = 4,
+    output_csv_path: Optional[str] = None,
 ) -> Dict[str, float]:
     """從模型提取特徵並計算全套檢索指標。
 
@@ -46,6 +49,7 @@ def evaluate_model(
         top_k_values: 計算 Precision@K 的 K 值列表。
         batch_size: 特徵提取的 batch 大小。
         num_workers: DataLoader workers 數量。
+        output_csv_path: 若提供，將配對的 similarity_score 與 is_tp 寫入 CSV，供繪圖使用。
 
     Returns:
         dict: 指標結果（IACS, Inter, Margin, Top-K）。
@@ -90,6 +94,9 @@ def evaluate_model(
         top_k_values=list(top_k_values),
     )
 
+    if output_csv_path:
+        _export_similarity_scores(features_cat, labels_cat, Path(output_csv_path))
+
     _log_metrics(metrics)
     return metrics
 
@@ -111,6 +118,54 @@ def save_metrics(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     logger.info("評估結果已儲存: %s", output_path)
+
+def _export_similarity_scores(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    output_csv: Path,
+    max_fp_samples: int = 100000,
+) -> None:
+    """計算配對的 similarity score 並導出到 CSV。
+
+    為了避免 CSV 過大，False Positive 會隨機抽樣。
+    """
+    logger.info("開始計算配對相似度以供圖表使用...")
+    device = features.device
+    N = features.shape[0]
+
+    # L2 normalize -> cosine similarity = dot product
+    feat_norm = torch.nn.functional.normalize(features, dim=1)
+    sim_matrix = feat_norm @ feat_norm.T
+
+    # 找出 TP 與 FP
+    labels = labels.to(device)
+    same_class = labels.unsqueeze(0) == labels.unsqueeze(1)
+    self_mask = torch.eye(N, dtype=torch.bool, device=device)
+
+    tp_mask = same_class & ~self_mask
+    fp_mask = ~same_class
+
+    # 取得 TP 分數 (全取，因為通常數量較少)
+    tp_scores = sim_matrix[tp_mask].cpu().numpy().tolist()
+    
+    # 取得 FP 分數，若超過 max_fp_samples 則隨機抽樣
+    fp_scores_full = sim_matrix[fp_mask].cpu().numpy()
+    if len(fp_scores_full) > max_fp_samples:
+        import numpy as np
+        fp_scores = np.random.choice(fp_scores_full, max_fp_samples, replace=False).tolist()
+    else:
+        fp_scores = fp_scores_full.tolist()
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["similarity_score", "is_tp"])
+        for score in tp_scores:
+            writer.writerow([score, "True Positive"])
+        for score in fp_scores:
+            writer.writerow([score, "False Positive"])
+            
+    logger.info("相似度 CSV 匯出完成: %s (TP: %d, FP: %d)", output_csv, len(tp_scores), len(fp_scores))
 
 
 def _log_metrics(metrics: Dict[str, float]) -> None:

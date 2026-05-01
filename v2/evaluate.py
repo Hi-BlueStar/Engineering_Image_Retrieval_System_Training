@@ -43,7 +43,6 @@ from src.dataset.labeled_dataset import LabeledImageDataset
 from src.evaluation.evaluator import evaluate_model, save_metrics
 from src.logger import get_logger, setup_logging
 from src.model.simsiam import SimSiam
-import subprocess
 
 logger = get_logger(__name__)
 
@@ -291,37 +290,6 @@ def main() -> None:
         extra_info=output_payload,
     )
     logger.info("評估完成。結果已儲存至: %s", ev.output_path)
-
-    # --- 繪製報表 ---
-    logger.info("開始繪製學術圖表...")
-    try:
-        plot_script = str(PROJECT_ROOT / "scripts" / "plot_academic_retrieval_analysis.py")
-        raw_pdf_path = str(Path(ev.output_path).with_name("eval_results_raw.pdf"))
-        
-        subprocess.run([
-            sys.executable, plot_script,
-            "--csv", raw_csv_path,
-            "--score_col", "similarity_score",
-            "--label_col", "is_tp",
-            "--output", raw_pdf_path,
-            "--title", "Distribution of Similarity Scores (Raw)"
-        ], check=True)
-        logger.info("原始資料圖表已儲存至: %s", raw_pdf_path)
-        
-        if pre_metrics is not None:
-            pre_pdf_path = str(Path(ev.output_path).with_name("eval_results_preprocessed.pdf"))
-            subprocess.run([
-                sys.executable, plot_script,
-                "--csv", pre_csv_path,
-                "--score_col", "similarity_score",
-                "--label_col", "is_tp",
-                "--output", pre_pdf_path,
-                "--title", "Distribution of Similarity Scores (Preprocessed)"
-            ], check=True)
-            logger.info("前處理資料圖表已儲存至: %s", pre_pdf_path)
-            
-    except subprocess.CalledProcessError as e:
-        logger.error("繪製學術圖表時發生錯誤: %s", e)
 
 
 if __name__ == "__main__":

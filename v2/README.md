@@ -186,18 +186,13 @@ uv run python v2/train.py --config v2/configs/default.yaml \
 
 ```bash
 # 評估
-uv run python v2/evaluate.py --config v2/configs/eval.yaml --checkpoint_path outputs/simsiam_exp_{{Date}}/Run_01_Seed_42/checkpoints/checkpoint_best.pth
+uv run python v2/evaluate.py --config v2/configs/eval.yaml
 ```
 
 繪製報表：
 
 ```bash
-python3 v2/scripts/plot_academic_retrieval_analysis.py \
-    --csv outputs/your_results.csv \
-    --score_col similarity_score \
-    --label_col is_tp \
-    --output outputs/academic_chart.pdf
-
+uv run python v2/scripts/plot_academic_retrieval_analysis.py --dummy --output outputs/dummy_redesign.pdf
 ```
 
 ### 3.4 查看結果

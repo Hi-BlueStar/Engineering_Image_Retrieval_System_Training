@@ -78,6 +78,27 @@ def _build_scheduler(
     )
 
 
+def _get_param_groups(model: torch.nn.Module, weight_decay: float) -> list[dict]:
+    """分離需套用 Weight Decay 的參數。
+    
+    將 biases 和 BatchNorm 參數 (ndim <= 1) 從 weight decay 中排除，
+    防止這類參數在對比學習中衰減至 0 導致維度坍塌。
+    """
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim <= 1 or name.endswith(".bias"):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+
+
 def _run_single_training(
     cfg: AppConfig,
     run_idx: int,
@@ -152,9 +173,8 @@ def _run_single_training(
             ).to(device)
 
         # --- Optimizer & Scheduler ---
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=t.lr, weight_decay=t.weight_decay
-        )
+        param_groups = _get_param_groups(model, t.weight_decay)
+        optimizer = torch.optim.AdamW(param_groups, lr=t.lr)
         scheduler = _build_scheduler(optimizer, t)
         scaler = torch.amp.GradScaler(device="cuda", enabled=(device == "cuda" and t.use_amp))
 

@@ -189,12 +189,30 @@ uv run python v2/train.py --config v2/configs/default.yaml \
 uv run python v2/evaluate.py --config v2/configs/eval.yaml
 ```
 
-繪製報表：
+繪製學術報表 (自動根據時間戳記區隔輸出目錄)：
 
 ```bash
-uv run python v2/scripts/plot_academic_charts.py --input <你的CSV路徑> --output_dir results/figures
+# 1. 繪製相似度/距離分佈圖
+# 輸出將自動儲存於 results/figures_exp_YYYYMMDD_HHMMSS/
+uv run python v2/scripts/plot_academic_charts.py --input outputs/evaluate_exp_<timestamp>/eval_results_raw.csv
 
+# 2. 繪製訓練進度曲線
+uv run python v2/scripts/plot_academic_charts.py --training_log outputs/simsiam_exp_<timestamp>/Run_01_Seed42/training_log.csv
+
+# 3. 繪製檢索指標摘要
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_<timestamp>/eval_results.json
 ```
+
+uv run python v2/evaluate.py --config v2/configs/eval.yaml
+uv run python v2/scripts/plot_academic_charts.py --input outputs/evaluate_exp_20260130_105404/eval_results.json
+uv run python v2/scripts/plot_academic_charts.py --training_log outputs/simsiam_exp_20260130_105404/Run_01_Seed_42/training_log.csv
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260130_105404/eval_results.json
+
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260130_105404/eval_results.json
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260428_022735/eval_results.json
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260428_063517/eval_results.json
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260429_112325/eval_results.json
+uv run python v2/scripts/plot_academic_charts.py --metrics outputs/evaluate_exp_20260501_070106/eval_results.json
 
 ### 3.4 查看結果
 

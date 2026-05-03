@@ -219,6 +219,18 @@ def main() -> None:
     cfg = AppConfig.from_yaml(args.config, cli_overrides=overrides)
     ev = cfg.eval
 
+    # --- 自動推導輸出路徑 (依據 Checkpoint 的時間戳記) ---
+    import re
+    # 搜尋模式: simsiam_exp_YYYYMMDD_HHMMSS
+    exp_match = re.search(r"simsiam_exp_(\d{8}_\d{6})", ev.checkpoint_path)
+    if exp_match:
+        timestamp = exp_match.group(1)
+        new_output_dir = Path("outputs") / f"evaluate_exp_{timestamp}"
+        new_output_dir.mkdir(parents=True, exist_ok=True)
+        # 更新 output_path 為該目錄下的 JSON
+        ev.output_path = str(new_output_dir / "eval_results.json")
+        logger.info("自動推導評估輸出目錄: %s", new_output_dir)
+
     # --- Logging ---
     log_file: Optional[str] = None
     if cfg.logging.log_to_file:

@@ -69,10 +69,10 @@ data:
 # ------------------------------------------------------------------------------
 model:
   backbone: "resnet18"
-  pretrained: true
+  pretrained: false
   in_channels: 1
   proj_dim: 2048
-  proj_hidden: null
+  proj_hidden: 2048
   pred_hidden: 512
 
 # ------------------------------------------------------------------------------
@@ -81,10 +81,10 @@ model:
 training:
   img_size: 256
   epochs: 200
-  batch_size: 128
+  batch_size: 512
   lr: 2.0e-5
   weight_decay: 1.0e-5
-  num_workers: 4 # cache 模式下無 disk I/O，4 個 worker 已足夠；過多反而增加 fork/IPC 成本
+  num_workers: 16 # cache 模式下無 disk I/O，4 個 worker 已足夠；過多反而增加 fork/IPC 成本
   prefetch_factor: 2 # float16→float32 upcast 快取路徑每 batch ~32MB，過大 prefetch 會吃 pinned RAM
   cache_in_memory: false # 已由 cache_mode 取代；保留以向下相容（true → 強制 full mode）
   cache_mode: "auto" # "auto"（依可用 RAM 自動選擇）| "full" | "partitioned" | "none"

@@ -39,29 +39,36 @@ def _mlp(
     hidden_dim: int,
     out_dim: int,
     *,
+    num_layers: int = 2,
     bn_last: bool = True,
     dropout: float = 0.0,
 ) -> nn.Sequential:
-    """建立 MLP 區塊（Linear → BN → ReLU → [Dropout] → Linear [→ BN]）。
+    """建立多層 MLP 區塊。
 
     Args:
         in_dim: 輸入維度。
         hidden_dim: 隱藏層維度。
         out_dim: 輸出維度。
+        num_layers: 總層數。
         bn_last: 最後一層是否加 BatchNorm。
-        dropout: 第一層後的 Dropout 比率。
+        dropout: 每層隱藏層後的 Dropout 比率。
 
     Returns:
         nn.Sequential: MLP 模組。
     """
-    layers: list[nn.Module] = [
-        nn.Linear(in_dim, hidden_dim, bias=False),
-        nn.BatchNorm1d(hidden_dim),
-        nn.ReLU(inplace=True),
-    ]
-    if dropout > 0:
-        layers.append(nn.Dropout(dropout))
-    layers.append(nn.Linear(hidden_dim, out_dim, bias=False))
+    layers: list[nn.Module] = []
+    current_dim = in_dim
+    for _ in range(num_layers - 1):
+        layers.extend([
+            nn.Linear(current_dim, hidden_dim, bias=False),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+        ])
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        current_dim = hidden_dim
+
+    layers.append(nn.Linear(current_dim, out_dim, bias=False))
     if bn_last:
         layers.append(nn.BatchNorm1d(out_dim, affine=True))
     return nn.Sequential(*layers)
@@ -104,9 +111,10 @@ class SimSiam(nn.Module):
         )
 
         # 2. Projector（proj_hidden=None 時自動使用 backbone feat_dim）
+        # 依 SimSiam 論文，Projector 應為 3 層 MLP
         effective_hidden = proj_hidden if proj_hidden is not None else feat_dim
         self.projector = _mlp(
-            feat_dim, effective_hidden, proj_dim, bn_last=True, dropout=dropout
+            feat_dim, effective_hidden, proj_dim, num_layers=3, bn_last=True, dropout=dropout
         )
 
         # 3. Predictor

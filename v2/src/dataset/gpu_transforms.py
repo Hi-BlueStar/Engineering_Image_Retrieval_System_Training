@@ -58,16 +58,19 @@ class RandomGPUMorphology(nn.Module):
         if not self.training:
             return x
 
-        # 在 GPU 上產生隨機數，避免 .item() 造成的同步阻塞
-        r = torch.rand(2, device=x.device)
-        if r[0] > self.p:
-            return x
-
-        # 隨機選擇膨脹或腐蝕
-        if r[1] > 0.5:
-            return KM.dilation(x, self.kernel)
-        else:
-            return KM.erosion(x, self.kernel)
+        b = x.size(0)
+        # 生成 mask 決定是否套用增強 (不觸發 host-device sync)
+        apply_mask = (torch.rand(b, 1, 1, 1, device=x.device) < self.p).to(x.dtype)
+        
+        # 決定膨脹或腐蝕
+        dilate_mask = (torch.rand(b, 1, 1, 1, device=x.device) > 0.5).to(x.dtype)
+        
+        dilated = KM.dilation(x, self.kernel)
+        eroded = KM.erosion(x, self.kernel)
+        
+        x_aug = dilated * dilate_mask + eroded * (1.0 - dilate_mask)
+        
+        return x * (1.0 - apply_mask) + x_aug * apply_mask
 
 
 class GPUAugmentation(nn.Module):
@@ -113,16 +116,15 @@ class GPUAugmentation(nn.Module):
                     same_on_batch=False,
                 ),
                 K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
-                K.RandomVerticalFlip(p=0.5, same_on_batch=False),
                 
-                # 2. 結構變換 (對應 Pipeline 1 的兩次 RandomAffine)
+                # 2. 結構變換 (對應 Pipeline 1 的兩次 RandomAffine，降低角度以保留文字方向)
                 K.RandomAffine(
-                    degrees=45.0,
+                    degrees=15.0,
                     p=0.3,
                     same_on_batch=False,
                 ),
                 K.RandomAffine(
-                    degrees=45.0,
+                    degrees=15.0,
                     p=0.3,
                     same_on_batch=False,
                 ),

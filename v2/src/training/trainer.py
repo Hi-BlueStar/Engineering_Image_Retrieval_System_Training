@@ -121,8 +121,8 @@ class Trainer:
         epochs: int,
         *,
         start_epoch: int = 1,
-        best_val_loss: float = float("inf"),
-        epoch_callback: Optional[Callable[[dict], None]] = None,
+        best_score: float = -float("inf"),
+        epoch_callback: Optional[Callable[[dict, nn.Module], Optional[float]]] = None,
     ) -> dict[str, Any]:
         """執行完整的多 epoch 訓練迴圈。
 
@@ -143,7 +143,7 @@ class Trainer:
 
         if start_epoch > epochs:
             logger.info("訓練已完成 (start_epoch=%d > epochs=%d)，跳過", start_epoch, epochs)
-            return {"best_val_loss": best_val_loss}
+            return {"best_score": best_score}
 
         logger.info(
             "開始訓練: epochs=%d, start=%d, AMP=%s, device=%s, has_val=%s",
@@ -193,28 +193,11 @@ class Trainer:
                 else:
                     val_loss, val_std = train_loss, train_std
 
-                # --- Checkpoint (暫停計時) ---
+                # --- Checkpoint & Metrics ---
                 epoch_timer.pause()
-
-                is_best = val_loss < best_val_loss
-                if is_best:
-                    best_val_loss = val_loss
-
-                self.checkpoint_mgr.save(
-                    self.model, self.optimizer, epoch, val_loss, is_best,
-                    scheduler=self.scheduler, scaler=self.scaler,
-                )
-
-                epoch_timer.resume()
-
-                # --- Scheduler ---
-                self.scheduler.step()
-
-                # --- 停止 epoch 計時 ---
                 epoch_net = epoch_timer.stop()
                 epoch_wall = time.perf_counter() - wall_start
 
-                # --- 指標收集 ---
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metrics = {
                     "epoch": epoch,
@@ -225,18 +208,30 @@ class Trainer:
                     "lr": current_lr,
                     "epoch_net_sec": epoch_net,
                     "epoch_wall_sec": epoch_wall,
-                    "is_best": is_best,
                 }
 
+                score = -val_loss
                 if epoch_callback:
-                    epoch_callback(metrics)
+                    cb_score = epoch_callback(metrics, self.model)
+                    if cb_score is not None:
+                        score = cb_score
+
+                is_best = score > best_score
+                if is_best:
+                    best_score = score
+                metrics["is_best"] = is_best
+
+                self.checkpoint_mgr.save(
+                    self.model, self.optimizer, epoch, val_loss, is_best,
+                    scheduler=self.scheduler, scaler=self.scaler,
+                )
 
                 best_marker = " [bold yellow]★[/]" if is_best else ""
                 info_str = (
                     f"[green]t={train_loss:.4f}[/] "
                     f"[yellow]v={val_loss:.4f}[/] "
                     f"lr={current_lr:.1e} "
-                    f"best={best_val_loss:.4f}{best_marker}"
+                    f"best={best_score:.4f}{best_marker}"
                 )
                 progress.update(epoch_task, advance=1, info=info_str)
 
@@ -257,13 +252,13 @@ class Trainer:
         _console.print(
             Panel(
                 f"[bold green]訓練完成[/bold green]\n"
-                f"Best Val Loss: [cyan]{best_val_loss:.6f}[/cyan]",
+                f"Best Score: [cyan]{best_score:.6f}[/cyan]",
                 title="[bold]Training Summary",
                 border_style="green",
             )
         )
-        logger.info("訓練完成: best_val_loss=%.4f", best_val_loss)
-        return {"best_val_loss": best_val_loss}
+        logger.info("訓練完成: best_score=%.4f", best_score)
+        return {"best_score": best_score}
 
     def _train_one_epoch(
         self,
@@ -333,6 +328,9 @@ class Trainer:
                         self.model.parameters(), self.grad_clip
                     )
                 self.optimizer.step()
+
+            # 按 iteration 更新 learning rate
+            self.scheduler.step()
 
             total_loss += loss.detach()
 

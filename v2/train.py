@@ -49,32 +49,34 @@ logger = get_logger(__name__)
 def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     t: "TrainingConfig",  # noqa: F821
+    steps_per_epoch: int,
 ) -> torch.optim.lr_scheduler.LRScheduler:
-    """依設定建立學習率排程器。
+    """建立具備 Warmup 與 Cosine Annealing 的 Scheduler。
 
     Args:
         optimizer: 優化器。
-        t: TrainingConfig，讀取 ``scheduler`` 與 ``epochs``。
+        t: TrainingConfig，讀取 ``epochs``。
+        steps_per_epoch: 每個 epoch 的 batch 數。
 
     Returns:
         LRScheduler 實例。
-
-    Raises:
-        ValueError: 當 ``scheduler`` 值不被支援時。
     """
-    name = t.scheduler.lower()
-    if name == "cosine":
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=t.epochs
-        )
-    if name == "step":
-        return torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=max(1, t.epochs // 3), gamma=0.1
-        )
-    if name == "constant":
-        return torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
-    raise ValueError(
-        f"不支援的 scheduler: '{t.scheduler}'。可用: cosine, step, constant"
+    total_iters = steps_per_epoch * t.epochs
+    warmup_epochs = min(10, max(1, t.epochs // 10))
+    warmup_iters = warmup_epochs * steps_per_epoch
+
+    scheduler1 = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_iters
+    )
+    
+    scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(1, total_iters - warmup_iters)
+    )
+    
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[scheduler1, scheduler2],
+        milestones=[warmup_iters]
     )
 
 
@@ -174,8 +176,9 @@ def _run_single_training(
 
         # --- Optimizer & Scheduler ---
         param_groups = _get_param_groups(model, t.weight_decay)
-        optimizer = torch.optim.AdamW(param_groups, lr=t.lr)
-        scheduler = _build_scheduler(optimizer, t)
+        optimizer = torch.optim.SGD(param_groups, lr=t.lr, momentum=0.9)
+        steps_per_epoch = len(train_loader) if t.max_batches is None else min(len(train_loader), t.max_batches)
+        scheduler = _build_scheduler(optimizer, t, steps_per_epoch)
         scaler = torch.amp.GradScaler(device="cuda", enabled=(device == "cuda" and t.use_amp))
 
         # --- Checkpoint Manager ---
@@ -188,7 +191,7 @@ def _run_single_training(
 
         # --- 斷點恢復 ---
         start_epoch = 1
-        resume_best_val_loss = float("inf")
+        resume_best_score = -float("inf")
         if t.resume:
             latest_ckpt = ckpt_mgr.find_latest_checkpoint()
             if latest_ckpt is not None:
@@ -196,7 +199,11 @@ def _run_single_training(
                     latest_ckpt, model, optimizer, scheduler, scaler
                 )
                 start_epoch = state.get("epoch", 0) + 1
-                resume_best_val_loss = state.get("val_loss", float("inf"))
+                # 向下相容處理
+                if "best_score" in state:
+                    resume_best_score = state["best_score"]
+                elif "val_loss" in state:
+                    resume_best_score = -state["val_loss"]
                 logger.info(
                     "Resume 成功: %s → 從 epoch %d 繼續訓練",
                     latest_ckpt.name,
@@ -225,14 +232,38 @@ def _run_single_training(
             channels_last=use_channels_last,
         )
 
+        # --- Eval Callback 閉包 ---
+        from typing import Optional
+        def epoch_callback(metrics: dict, current_model: torch.nn.Module) -> Optional[float]:
+            # 先寫入基本訓練與 SSL loss 紀錄
+            run_tracker.log_epoch(metrics)
+            
+            # 若提供 labeled_ds，我們計算 KNN / top-1 作為 Early Stopping 依據
+            if labeled_ds is not None:
+                try:
+                    eval_metrics = evaluate_model(
+                        model=current_model,
+                        labeled_dataset=labeled_ds,
+                        device=device,
+                        top_k_values=d.eval_top_k_values,
+                        batch_size=t.batch_size,
+                        num_workers=t.num_workers,
+                    )
+                    metrics.update(eval_metrics)
+                    run_tracker.log_epoch(metrics) # 補寫入 evaluation 紀錄
+                    return eval_metrics.get("top_1_precision", None)
+                except Exception as eval_err:
+                    logger.warning("Epoch %d 檢索評估失敗: %s", metrics.get("epoch", 0), eval_err)
+            return None
+
         # --- 訓練 ---
         result = trainer.fit(
             train_loader=train_loader,
             val_loader=val_loader,
             epochs=t.epochs,
             start_epoch=start_epoch,
-            best_val_loss=resume_best_val_loss,
-            epoch_callback=lambda metrics: run_tracker.log_epoch(metrics),
+            best_score=resume_best_score,
+            epoch_callback=epoch_callback,
         )
 
         # --- 報表 ---
@@ -265,7 +296,7 @@ def _run_single_training(
         return {
             "run_name": run_name,
             "seed": seed,
-            "best_val_loss": result["best_val_loss"],
+            "best_score": result.get("best_score", None),
             "n_train": n_train,
             "n_val": n_val,
             "status": "success",
@@ -279,7 +310,7 @@ def _run_single_training(
         return {
             "run_name": run_name,
             "seed": seed,
-            "best_val_loss": None,
+            "best_score": None,
             "status": "failed",
             "error": str(e),
         }
@@ -374,17 +405,17 @@ def main() -> None:
     logger.info("=" * 60)
 
     for r in run_results:
-        loss_str = (
-            f"{r['best_val_loss']:.4f}"
-            if isinstance(r.get("best_val_loss"), float)
-            else str(r.get("best_val_loss", "N/A"))
+        score_str = (
+            f"{r['best_score']:.4f}"
+            if isinstance(r.get("best_score"), float)
+            else str(r.get("best_score", "N/A"))
         )
         status = "✔" if r.get("status") == "success" else "✗"
         logger.info(
-            "  %s %s — Best Val Loss: %s",
+            "  %s %s — Best Score: %s",
             status,
             r.get("run_name", ""),
-            loss_str,
+            score_str,
         )
 
     logger.info("實驗目錄: %s", tracker.experiment_dir)

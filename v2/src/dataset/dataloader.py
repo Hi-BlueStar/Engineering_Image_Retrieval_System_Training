@@ -98,17 +98,19 @@ class PartitionedDataLoaderWrapper:
             indices = self.dataset.get_partition_indices(p_idx)
             subset = Subset(self.dataset, indices)
 
+            # 由於每次重建 DataLoader 會造成極大 overhead，強制在 partitioned 模式下
+            # 將 num_workers 設為 0 (主執行緒從快取記憶體取資料極快)
             loader = DataLoader(
                 subset,
                 batch_size=t.batch_size,
                 shuffle=True,
-                num_workers=t.num_workers,
+                num_workers=0,
                 pin_memory=True,
-                prefetch_factor=pf,
+                prefetch_factor=None,
                 drop_last=len(indices) >= t.batch_size,
                 generator=self.generator,
                 worker_init_fn=self.worker_init,
-                persistent_workers=False,  # 分區切換時不保留 workers，避免 stale cache ref
+                persistent_workers=False,
             )
 
             logger.info(

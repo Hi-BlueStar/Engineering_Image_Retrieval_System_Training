@@ -41,10 +41,13 @@ class EngineeringDrawingAugmentation:
     ) -> None:
         if use_augmentation:
             self._transform = T.Compose([
-                T.RandomResizedCrop(img_size, scale=(0.2, 1.0), ratio=(0.75, 1.333)),
-                T.RandomHorizontalFlip(p=0.5),
-                T.RandomVerticalFlip(p=0.5),
-                T.RandomApply([T.RandomRotation(degrees=30, fill=255)], p=0.5),
+                T.RandomResizedCrop(img_size, scale=(0.2, 1.0)),
+                T.RandomApply([
+                    T.RandomHorizontalFlip(p=0.5),
+                    T.RandomVerticalFlip(p=0.5),  # 工程圖通常具有對稱性
+                    T.RandomRotation(degrees=(90, 90), fill=255),
+                ],
+                p=0.8),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

@@ -35,26 +35,26 @@ class EngineeringDrawingAugmentation:
     def __init__(
         self,
         img_size: int = 512,
-        mean: Tuple[float, ...] = (0.5,),
-        std: Tuple[float, ...] = (0.5,),
+        mean: Tuple[float, ...] = (0.0394,),
+        std: Tuple[float, ...] = (0.1752,),
         use_augmentation: bool = True,
     ) -> None:
         if use_augmentation:
             self._transform = T.Compose([
-                T.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
-                T.RandomApply([
-                    T.RandomHorizontalFlip(p=0.5),
-                    T.RandomVerticalFlip(p=0.5),  # 工程圖通常具有對稱性
-                    T.RandomRotation(degrees=(90, 90), fill=255),
-                ],
-                p=0.8),
+                T.RandomInvert(p=1.0), # 背景反轉
+                T.RandomResizedCrop(size=img_size, scale=(0.2, 1.0)),
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomVerticalFlip(p=0.5),
+                T.RandomRotation(degrees=180, fill=0),
+                T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3),
                 T.ToTensor(),
-                T.Normalize(mean=mean, std=std), # TODO: 考慮對工程圖先做 Invert，再計算真實 Mean/Std
+                T.Normalize(mean=mean, std=std),
             ])
         else:
             # 消融實驗：無增強版（僅 Letterbox + normalize）
             self._transform = T.Compose([
                 Letterbox(img_size, fill=255),
+                T.RandomInvert(p=1.0),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

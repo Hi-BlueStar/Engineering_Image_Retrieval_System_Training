@@ -167,12 +167,9 @@ def create_dataloaders(
             cache_mode="none",
         )
     else:
-        mean = tuple(0.5 for _ in range(in_channels))
-        std = tuple(0.5 for _ in range(in_channels))
+        # CPU 增強模式：使用類別內建的專屬 Mean/Std
         aug = EngineeringDrawingAugmentation(
             img_size=t.img_size,
-            mean=mean,
-            std=std,
             use_augmentation=t.use_augmentation,
         )
         train_ds = UnlabeledImageDataset(train_path, t.img_exts, aug, in_channels)

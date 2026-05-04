@@ -69,9 +69,9 @@ class GPUAugmentation(nn.Module):
         self.use_augmentation = use_augmentation
         self.in_channels = in_channels
 
-        # 正規化參數
-        self._mean = torch.tensor([0.5] * in_channels)
-        self._std = torch.tensor([0.5] * in_channels)
+        # 正規化參數 (基於資料集反轉後計算的 Mean=0.0394, Std=0.1752)
+        self._mean = torch.tensor([0.0394] * in_channels)
+        self._std = torch.tensor([0.1752] * in_channels)
 
         self._aug = self._build_aug() if _KORNIA_AVAILABLE else None
 
@@ -81,33 +81,34 @@ class GPUAugmentation(nn.Module):
 
         if self.use_augmentation:
             return K.AugmentationSequential(
-                # 1. 基礎幾何與縮放
+                # 0. 影像反轉 (使背景變為 0，線條為非零)
+                K.RandomInvert(p=1.0),
+
+                # 1. 核心增強：學習局部與幾何不變性 (SimSiam 關鍵)
                 K.RandomResizedCrop(
-                    (self.img_size, self.img_size),
-                    scale=(0.7, 1.0),
-                    ratio=(0.75, 1.333),
-                    same_on_batch=False,
+                    size=(self.img_size, self.img_size),
+                    scale=(0.2, 1.0),
+                    resample="bilinear",
+                    p=1.0
                 ),
-                K.RandomHorizontalFlip(p=0.4, same_on_batch=False),
-                K.RandomVerticalFlip(p=0.4, same_on_batch=False),
-                K.RandomRotation(degrees=(90, 90), p=0.8, same_on_batch=False),
 
-                
-                # 2. 正規化
-                K.Normalize(mean=mean, std=std), # TODO: 考慮對工程圖先做 Invert，再計算真實 Mean/Std
+                # 2. 幾何變換
+                K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
+                K.RandomVerticalFlip(p=0.5, same_on_batch=False),
+                K.RandomRotation(degrees=180.0, p=0.5, same_on_batch=False),
 
-                # 3. 遮擋 (Cutout)
-                K.RandomErasing(
-                    scale=(0.02, 0.15),
-                    ratio=(0.3, 3.3),
-                    p=0.3,
-                    same_on_batch=False,
-                ),
+                # 3. 模糊 (模擬掃描或低解析度情況)
+                K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.3),
+
+                # 4. 正規化
+                K.Normalize(mean=mean, std=std),
+
                 data_keys=["input"],
             )
         else:
             return K.AugmentationSequential(
                 K.Resize((self.img_size, self.img_size)),
+                K.RandomInvert(p=1.0),
                 K.Normalize(mean=mean, std=std),
                 data_keys=["input"],
             )

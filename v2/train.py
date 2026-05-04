@@ -83,16 +83,14 @@ def _build_scheduler(
 def _get_param_groups(model: torch.nn.Module, weight_decay: float) -> list[dict]:
     """分離需套用 Weight Decay 的參數。
     
-    將 biases 和 BatchNorm 參數 (ndim <= 1) 從 weight decay 中排除，
-    防止這類參數在對比學習中衰減至 0 導致維度坍塌。
-    針對 SimSiam，Predictor 的參數也應排除 Weight Decay。
+    將 biases 和 BatchNorm 參數 (ndim <= 1) 從 weight decay 中排除。
     """
     decay = []
     no_decay = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.ndim <= 1 or name.endswith(".bias") or "predictor" in name:
+        if param.ndim <= 1 or name.endswith(".bias"):
             no_decay.append(param)
         else:
             decay.append(param)

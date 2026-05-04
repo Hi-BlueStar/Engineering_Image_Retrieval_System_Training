@@ -55,7 +55,8 @@ from src.data.logo_removal import remove_logo
 from src.data.preprocessing import apply_crop_postprocess, binarize, discover_components
 from src.data.topology import sort_crops_by_topology
 from src.dataset.dataset import Letterbox
-from src.dataset.transforms import EngineeringDrawingAugmentation
+import torch
+from src.dataset.gpu_transforms import GPUAugmentation
 from src.logger import get_logger
 
 console = Console()
@@ -300,13 +301,25 @@ class PreprocessingPreview:
         return out_path
 
     def _simulate_augmentation(self, img: np.ndarray, img_size: int) -> np.ndarray:
-        """以 EngineeringDrawingAugmentation 生成增強視角（與訓練 CPU 增強路徑完全相同）。"""
-        aug = EngineeringDrawingAugmentation(
-            img_size=img_size, mean=(0.5,), std=(0.5,), use_augmentation=True,
-        )
-        pil = PILImage.fromarray(img)
-        tensor, _ = aug(pil)
-        arr = (tensor.squeeze(0).numpy() * 0.5 + 0.5) * 255
+        """以 GPUAugmentation 生成增強視角。"""
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        aug = GPUAugmentation(
+            img_size=img_size, use_augmentation=True, in_channels=1
+        ).to(device)
+        aug.eval()
+
+        # img is [H, W] np.uint8 [0, 255]
+        # convert to [1, 1, H, W] tensor [0, 1]
+        tensor = torch.from_numpy(img).float().unsqueeze(0).unsqueeze(0) / 255.0
+        tensor = tensor.to(device)
+
+        with torch.no_grad():
+            # GPUAugmentation.create_views returns (view1, view2)
+            v1, _ = aug.create_views(tensor)
+
+        # v1 is [1, 1, H, W] normalized
+        # Denormalize: v * 0.5 + 0.5
+        arr = (v1.squeeze(0).squeeze(0).cpu().numpy() * 0.5 + 0.5) * 255
         return np.clip(arr, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------ #

@@ -144,24 +144,19 @@ training:
 sudo rm -rf data/converted_images data/preprocessed_images data/raw_pdfs dataset
 ```
 
-temp：
-
-```bash
-uv run python v2/prepare_data.py --config v2/configs/default.yaml data.skip_extraction=true data.skip_pdf_conversion=true data.skip_preprocessing=true
-uv run python v2/train.py --config v2/configs/default.yaml training.max_batches=200
-```
-
-```bash
-# 視覺化與檢查前處理效果
-uv run python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
-```
-
 ```bash
 # 完整流程：解壓 → PDF轉圖 → 前處理 → 分割
 uv run python v2/prepare_data.py --config v2/configs/default.yaml
 
 # 跳過已完成的步驟（自動偵測 + CLI 覆寫）
 uv run python v2/prepare_data.py --config v2/configs/default.yaml data.skip_extraction=true
+```
+
+### 3.2.2 視覺化與檢查前處理效果
+
+```bash
+# 視覺化與檢查前處理效果
+uv run python v2/analyze_data.py preview --config v2/configs/default.yaml --n-samples 20 --dpi 400
 ```
 
 ### 3.3 執行訓練

@@ -88,20 +88,15 @@ class GPUAugmentation(nn.Module):
                     ratio=(0.75, 1.333),
                     same_on_batch=False,
                 ),
-                K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
-                K.RandomVerticalFlip(p=0.5, same_on_batch=False),
-                
-                # 2. 雜訊
-                K.RandomSaltAndPepperNoise(
-                    amount=(0.0, 0.02),
-                    p=0.2,
-                    same_on_batch=False,
-                ),
+                K.RandomHorizontalFlip(p=0.4, same_on_batch=False),
+                K.RandomVerticalFlip(p=0.4, same_on_batch=False),
+                K.RandomRotation(degrees=(90, 90), p=0.8, same_on_batch=False),
 
-                # 3. 正規化
+                
+                # 2. 正規化
                 K.Normalize(mean=mean, std=std), # TODO: 考慮對工程圖先做 Invert，再計算真實 Mean/Std
 
-                # 4. 遮擋 (Cutout)
+                # 3. 遮擋 (Cutout)
                 K.RandomErasing(
                     scale=(0.02, 0.15),
                     ratio=(0.3, 3.3),

@@ -85,13 +85,14 @@ def _get_param_groups(model: torch.nn.Module, weight_decay: float) -> list[dict]
     
     將 biases 和 BatchNorm 參數 (ndim <= 1) 從 weight decay 中排除，
     防止這類參數在對比學習中衰減至 0 導致維度坍塌。
+    針對 SimSiam，Predictor 的參數也應排除 Weight Decay。
     """
     decay = []
     no_decay = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.ndim <= 1 or name.endswith(".bias"):
+        if param.ndim <= 1 or name.endswith(".bias") or "predictor" in name:
             no_decay.append(param)
         else:
             decay.append(param)
@@ -175,8 +176,10 @@ def _run_single_training(
             ).to(device)
 
         # --- Optimizer & Scheduler ---
+        scaled_lr = t.lr * t.batch_size / 256.0
+        logger.info("Scaling learning rate: base_lr=%.4f, batch_size=%d -> scaled_lr=%.4f", t.lr, t.batch_size, scaled_lr)
         param_groups = _get_param_groups(model, t.weight_decay)
-        optimizer = torch.optim.SGD(param_groups, lr=t.lr, momentum=0.9)
+        optimizer = torch.optim.SGD(param_groups, lr=scaled_lr, momentum=0.9)
         steps_per_epoch = len(train_loader) if t.max_batches is None else min(len(train_loader), t.max_batches)
         scheduler = _build_scheduler(optimizer, t, steps_per_epoch)
         scaler = torch.amp.GradScaler(device="cuda", enabled=(device == "cuda" and t.use_amp))
@@ -238,22 +241,30 @@ def _run_single_training(
             # 先寫入基本訓練與 SSL loss 紀錄
             run_tracker.log_epoch(metrics)
             
+            epoch = metrics.get("epoch", 0)
+            eval_freq = getattr(e, "eval_freq", 10)
+            should_eval = (epoch % eval_freq == 0) or (epoch == t.epochs)
+            
             # 若提供 labeled_ds，我們計算 KNN / top-1 作為 Early Stopping 依據
             if labeled_ds is not None:
-                try:
-                    eval_metrics = evaluate_model(
-                        model=current_model,
-                        labeled_dataset=labeled_ds,
-                        device=device,
-                        top_k_values=d.eval_top_k_values,
-                        batch_size=t.batch_size,
-                        num_workers=t.num_workers,
-                    )
-                    metrics.update(eval_metrics)
-                    run_tracker.log_epoch(metrics) # 補寫入 evaluation 紀錄
-                    return eval_metrics.get("top_1_precision", None)
-                except Exception as eval_err:
-                    logger.warning("Epoch %d 檢索評估失敗: %s", metrics.get("epoch", 0), eval_err)
+                if should_eval:
+                    try:
+                        eval_metrics = evaluate_model(
+                            model=current_model,
+                            labeled_dataset=labeled_ds,
+                            device=device,
+                            top_k_values=d.eval_top_k_values,
+                            batch_size=t.batch_size,
+                            num_workers=t.num_workers,
+                        )
+                        metrics.update(eval_metrics)
+                        run_tracker.log_epoch(metrics) # 補寫入 evaluation 紀錄
+                        return eval_metrics.get("top_1_precision", None)
+                    except Exception as eval_err:
+                        logger.warning("Epoch %d 檢索評估失敗: %s", epoch, eval_err)
+                else:
+                    # 若不進行評估，且我們本來是用 top-1 當指標，則回傳 -inf 確保不覆寫 best_score
+                    return -float('inf')
             return None
 
         # --- 訓練 ---

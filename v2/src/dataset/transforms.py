@@ -41,7 +41,7 @@ class EngineeringDrawingAugmentation:
     ) -> None:
         if use_augmentation:
             self._transform = T.Compose([
-                T.RandomResizedCrop(img_size, scale=(0.2, 1.0)),
+                T.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
                 T.RandomApply([
                     T.RandomHorizontalFlip(p=0.5),
                     T.RandomVerticalFlip(p=0.5),  # 工程圖通常具有對稱性
@@ -49,7 +49,7 @@ class EngineeringDrawingAugmentation:
                 ],
                 p=0.8),
                 T.ToTensor(),
-                T.Normalize(mean=mean, std=std),
+                T.Normalize(mean=mean, std=std), # TODO: 考慮對工程圖先做 Invert，再計算真實 Mean/Std
             ])
         else:
             # 消融實驗：無增強版（僅 Letterbox + normalize）

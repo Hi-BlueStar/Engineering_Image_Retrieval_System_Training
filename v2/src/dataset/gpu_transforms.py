@@ -45,33 +45,6 @@ except ImportError:
     )
 
 
-class RandomGPUMorphology(nn.Module):
-    """GPU 隨機形態學增強 (膨脹/腐蝕)。"""
-
-    def __init__(self, p: float = 0.5, kernel_size: int = 3) -> None:
-        super().__init__()
-        self.p = p
-        self.kernel_size = kernel_size
-        self.register_buffer("kernel", torch.ones(kernel_size, kernel_size))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.training:
-            return x
-
-        b = x.size(0)
-        # 生成 mask 決定是否套用增強 (不觸發 host-device sync)
-        apply_mask = (torch.rand(b, 1, 1, 1, device=x.device) < self.p).to(x.dtype)
-        
-        # 決定膨脹或腐蝕
-        dilate_mask = (torch.rand(b, 1, 1, 1, device=x.device) > 0.5).to(x.dtype)
-        
-        dilated = KM.dilation(x, self.kernel)
-        eroded = KM.erosion(x, self.kernel)
-        
-        x_aug = dilated * dilate_mask + eroded * (1.0 - dilate_mask)
-        
-        return x * (1.0 - apply_mask) + x_aug * apply_mask
-
 
 class GPUAugmentation(nn.Module):
     """GPU 批次增強器，呼叫 create_views() 生成 SimSiam 雙視角。
@@ -111,46 +84,24 @@ class GPUAugmentation(nn.Module):
                 # 1. 基礎幾何與縮放
                 K.RandomResizedCrop(
                     (self.img_size, self.img_size),
-                    scale=(0.2, 1.0),
+                    scale=(0.7, 1.0),
                     ratio=(0.75, 1.333),
                     same_on_batch=False,
                 ),
                 K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
+                K.RandomVerticalFlip(p=0.5, same_on_batch=False),
                 
-                # 2. 結構變換 (對應 Pipeline 1 的兩次 RandomAffine，降低角度以保留文字方向)
-                K.RandomAffine(
-                    degrees=15.0,
-                    p=0.3,
-                    same_on_batch=False,
-                ),
-                K.RandomAffine(
-                    degrees=15.0,
-                    p=0.3,
-                    same_on_batch=False,
-                ),
-
-                # 3. 幾何變型 (彈性變換)
-                K.RandomElasticTransform(
-                    alpha=(50.0, 50.0),
-                    sigma=(5.0, 5.0),
-                    p=0.3,
-                    same_on_batch=False,
-                ),
-
-                # 4. 形態學擾動 (線條粗細)
-                RandomGPUMorphology(p=0.3, kernel_size=3),
-
-                # 5. 雜訊
+                # 2. 雜訊
                 K.RandomSaltAndPepperNoise(
                     amount=(0.0, 0.02),
                     p=0.2,
                     same_on_batch=False,
                 ),
 
-                # 6. 正規化
-                K.Normalize(mean=mean, std=std),
+                # 3. 正規化
+                K.Normalize(mean=mean, std=std), # TODO: 考慮對工程圖先做 Invert，再計算真實 Mean/Std
 
-                # 7. 遮擋 (Cutout)
+                # 4. 遮擋 (Cutout)
                 K.RandomErasing(
                     scale=(0.02, 0.15),
                     ratio=(0.3, 3.3),

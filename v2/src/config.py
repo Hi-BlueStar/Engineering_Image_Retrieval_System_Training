@@ -190,12 +190,14 @@ class ExperimentConfig:
     Attributes:
         output_dir: 實驗結果輸出根目錄。
         exp_name: 實驗名稱前綴。
+        eval_freq: KNN 評估頻率 (每 N 個 epoch 執行一次)。
         save_freq: Checkpoint 儲存頻率。
         log_file: 日誌檔名。
     """
 
     output_dir: str = "outputs"
     exp_name: str = "simsiam_exp"
+    eval_freq: int = 10
     save_freq: int = 10
     log_file: str = "training.log"
 

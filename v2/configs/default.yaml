@@ -72,7 +72,7 @@ model:
   pretrained: false
   in_channels: 1
   proj_dim: 2048
-  proj_hidden: 2048
+  proj_hidden: 512
   pred_hidden: 512
 
 # ------------------------------------------------------------------------------
@@ -82,7 +82,7 @@ training:
   img_size: 256
   epochs: 200
   batch_size: 256
-  lr: 2.0e-5
+  lr: 0.05
   weight_decay: 1.0e-5
   num_workers: 4 # cache 模式下無 disk I/O，4 個 worker 已足夠；過多反而增加 fork/IPC 成本
   prefetch_factor: 2 # float16→float32 upcast 快取路徑每 batch ~32MB，過大 prefetch 會吃 pinned RAM
@@ -110,6 +110,7 @@ training:
 experiment:
   output_dir: "outputs"
   exp_name: "simsiam_exp"
+  eval_freq: 10
   save_freq: 10
   log_file: "training.log"
 

@@ -41,12 +41,11 @@ class EngineeringDrawingAugmentation:
     ) -> None:
         if use_augmentation:
             self._transform = T.Compose([
-                T.RandomInvert(p=1.0), # 背景反轉
+                # T.RandomInvert(p=1.0), # 背景反轉
                 T.RandomResizedCrop(size=img_size, scale=(0.2, 1.0)),
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
                 T.RandomRotation(degrees=180, fill=0),
-                T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])

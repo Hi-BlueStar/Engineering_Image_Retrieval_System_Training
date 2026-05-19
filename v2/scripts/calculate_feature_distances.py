@@ -91,7 +91,22 @@ def main():
         pred_hidden=pred_hidden,
         in_channels=in_channels,
     )
-    model.load_state_dict(state["state_dict"])
+    # 移除 torch.compile 產生的 "_orig_mod." 前綴
+    state_dict = state["state_dict"]
+    clean_state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    
+    # 相容舊版 2-layer projector
+    if "projector.6.weight" not in clean_state_dict:
+        print("  [註] 檢測到 Checkpoint 使用舊版 2-layer Projector，自動調整模型架構以相容。")
+        from src.model.simsiam import _mlp
+        feat_dim = clean_state_dict["projector.0.weight"].shape[1]
+        effective_hidden = clean_state_dict["projector.0.weight"].shape[0]
+        actual_proj_dim = clean_state_dict["projector.3.weight"].shape[0]
+        model.projector = _mlp(
+            feat_dim, effective_hidden, actual_proj_dim, num_layers=2, bn_last=True, dropout=0.0
+        )
+
+    model.load_state_dict(clean_state_dict)
     model.to(device)
     model.eval()
 

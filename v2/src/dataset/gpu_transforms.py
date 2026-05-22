@@ -36,6 +36,7 @@ logger = get_logger(__name__)
 try:
     import kornia.augmentation as K
     import kornia.morphology as KM
+    from kornia.constants import Resample
     _KORNIA_AVAILABLE = True
 except ImportError:
     _KORNIA_AVAILABLE = False
@@ -75,27 +76,39 @@ class GPUAugmentation(nn.Module):
 
         self._aug = self._build_aug() if _KORNIA_AVAILABLE else None
 
-    def _build_aug(self) -> nn.Module:
+    def _build_aug(
+        self,
+        degrees: float = 15.0,
+        translate: Tuple[float, float] = (0.1, 0.1)
+    ) -> nn.Module:
         mean = self._mean
         std = self._std
 
         if self.use_augmentation:
             return K.AugmentationSequential(
                 # 0. 影像反轉 (使背景變為 0，線條為非零)
-                K.RandomInvert(p=1.0),
+                K.RandomInvert(p=0.5, same_on_batch=False),
 
-                # 1. 核心增強：學習局部與幾何不變性 (SimSiam 關鍵)
-                K.RandomResizedCrop(
-                    size=(self.img_size, self.img_size),
-                    scale=(0.2, 1.0),
-                    resample="bilinear",
-                    p=1.0
-                ),
-
-                # 2. 幾何變換
+                # 1. 幾何變換
                 K.RandomHorizontalFlip(p=0.5, same_on_batch=False),
                 K.RandomVerticalFlip(p=0.5, same_on_batch=False),
-                K.RandomRotation(degrees=180.0, p=0.5, same_on_batch=False),
+                K.RandomAffine(
+                    degrees=degrees,
+                    translate=translate,
+                    resample=Resample.NEAREST.name,  # 強制最近鄰
+                    padding_mode='zeros',            # 確定性背景填充
+                    p=0.7,
+                    same_on_batch=False
+                ),
+
+                # 2. 學習局部與幾何不變性 (SimSiam 關鍵)
+                K.RandomResizedCrop(
+                    size=(self.img_size, self.img_size),
+                    resample=Resample.NEAREST.name,
+                    align_corners=None,
+                    p=0.5,
+                    same_on_batch=False
+                ),
 
                 # 3. 正規化
                 K.Normalize(mean=mean, std=std),

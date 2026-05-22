@@ -1,0 +1,20 @@
+# @package _global_
+# ==============================================================================
+# 實驗配置：Exp A T_large (啟用前處理，啟用增強，BatchSize=128，訓練集=T_large)
+# ==============================================================================
+
+data:
+  use_connected_components: true
+  use_topology_analysis: true
+  use_topology_pruning: true
+  remove_gifu_logo: true
+  skip_preprocessing: false
+  dataset_dir: "dataset_v2/T_large"
+
+training:
+  use_preprocessing: true
+  use_augmentation: true
+  batch_size: 128
+
+experiment:
+  exp_name: "exp_a_tlarge"

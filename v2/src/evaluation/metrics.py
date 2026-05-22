@@ -25,10 +25,10 @@ def compute_retrieval_metrics(
     labels: torch.Tensor,
     top_k_values: List[int] = (1, 5, 10),
 ) -> Dict[str, float]:
-    """計算完整的檢索評估指標組。
+    """計算完整的檢索評估指標組（Leave-One-Out 策略，防 OOM 分批實作）。
 
     Args:
-        features: 特徵矩陣 [N, D]，可未正規化（函式內自動 L2 normalize）。
+        features: 特徵矩陣 [N, D]。
         labels: 整數類別標籤 [N]。
         top_k_values: 需計算的 Top-K 值列表。
 
@@ -37,6 +37,7 @@ def compute_retrieval_metrics(
             - ``IACS``: 類別內平均餘弦相似度
             - ``inter_class_avg_sim``: 類別間平均餘弦相似度
             - ``contrastive_margin``: Margin = IACS - Inter
+            - ``macro_mAP``: 宏觀平均平均精度 (Macro-mAP)
             - ``top{k}_precision``: 各 k 值的 Precision@K
     """
     device = features.device
@@ -45,59 +46,110 @@ def compute_retrieval_metrics(
     # L2 normalize → 餘弦相似度 = 內積
     feat_norm = F.normalize(features, dim=1)
 
-    # 相似度矩陣 [N, N]
-    sim_matrix = feat_norm @ feat_norm.T
+    ap_all = torch.zeros(N, device=device)
+    intra_sim_sum = torch.zeros(N, device=device)
+    inter_sim_sum = torch.zeros(N, device=device)
+    intra_counts = torch.zeros(N, device=device)
+    inter_counts = torch.zeros(N, device=device)
 
-    # 同類別遮罩 (含自身)
-    labels = labels.to(device)
-    same_class = labels.unsqueeze(0) == labels.unsqueeze(1)  # [N, N]
-    self_mask = torch.eye(N, dtype=torch.bool, device=device)
+    # 預先統計每個類別的樣本數
+    unique_labels, labels_count = torch.unique(labels, return_counts=True)
+    label_to_count = {l.item(): c.item() for l, c in zip(unique_labels, labels_count)}
 
-    intra_mask = same_class & ~self_mask   # 同類、不含自身
-    inter_mask = ~same_class               # 不同類
+    topk_precisions = {f"top{k}_precision": torch.zeros(N, device=device) for k in top_k_values}
 
-    # ---- IACS ----
-    iacs = _masked_mean_per_row(sim_matrix, intra_mask).mean().item()
+    # 批次大小設為 512，防記憶體 OOM
+    eval_batch_size = min(512, N)
 
-    # ---- Inter-Class ----
-    inter = _masked_mean_per_row(sim_matrix, inter_mask).mean().item()
+    for i in range(0, N, eval_batch_size):
+        end_idx = min(i + eval_batch_size, N)
+        batch_feats = feat_norm[i:end_idx]  # [B, D]
+        batch_labels = labels[i:end_idx].to(device)  # [B]
 
-    # ---- Contrastive Margin ----
+        # 計算當前 Batch 對所有 Gallery 的相似度 -> [B, N]
+        sim_b = batch_feats @ feat_norm.T  # [B, N]
+
+        # 類別比對遮罩 -> [B, N]
+        same_class_b = batch_labels.unsqueeze(1) == labels.unsqueeze(0).to(device)  # [B, N]
+
+        # 建立 Self-mask (排除自身)
+        self_mask_b = torch.zeros_like(same_class_b, dtype=torch.bool)
+        for j in range(end_idx - i):
+            self_mask_b[j, i + j] = True
+
+        intra_mask_b = same_class_b & ~self_mask_b
+        inter_mask_b = ~same_class_b
+
+        # 累積統計數量與相似度和
+        intra_counts[i:end_idx] = intra_mask_b.sum(dim=1).float()
+        inter_counts[i:end_idx] = inter_mask_b.sum(dim=1).float()
+
+        intra_sim_sum[i:end_idx] = (sim_b * intra_mask_b.float()).sum(dim=1)
+        inter_sim_sum[i:end_idx] = (sim_b * inter_mask_b.float()).sum(dim=1)
+
+        # ---- Leave-One-Out AP 與 Top-K 計算 ----
+        sim_b_no_self = sim_b.clone()
+        sim_b_no_self[self_mask_b] = -float("inf")
+
+        # 排序
+        sorted_sim, sorted_indices = torch.sort(sim_b_no_self, dim=1, descending=True)
+        sorted_indices = sorted_indices[:, :-1]  # 移除最後一項 (即被設為 -inf 的自身)
+
+        # 取得排序後的標籤
+        sorted_labels = labels[sorted_indices.cpu()].to(device)  # [B, N-1]
+        is_match = (sorted_labels == batch_labels.unsqueeze(1)).float()  # [B, N-1]
+
+        # 計算累積匹配數與各 rank 上的 Precision
+        cum_matches = torch.cumsum(is_match, dim=1)
+        ranks = torch.arange(1, N, device=device).float().unsqueeze(0)  # [1, N-1]
+        precisions = cum_matches / ranks  # [B, N-1]
+
+        # 計算每個 Query 的 AP
+        for j in range(end_idx - i):
+            q_label = batch_labels[j].item()
+            R_q = label_to_count[q_label] - 1  # 扣除自身後的 Gallery 同類總數
+            if R_q > 0:
+                ap_all[i + j] = (precisions[j] * is_match[j]).sum() / R_q
+            else:
+                ap_all[i + j] = 0.0
+
+        # 計算每個 Query 的 Top-K Precision
+        for k in top_k_values:
+            k_clamped = min(k, N - 1)
+            topk_precisions[f"top{k}_precision"][i:end_idx] = cum_matches[:, k_clamped - 1] / k_clamped
+
+    # ---- 指標彙整 ----
+    # 避免除以 0
+    intra_counts_clamped = intra_counts.clamp(min=1.0)
+    inter_counts_clamped = inter_counts.clamp(min=1.0)
+
+    iacs_per_img = intra_sim_sum / intra_counts_clamped
+    inter_per_img = inter_sim_sum / inter_counts_clamped
+
+    # 若該樣本無同類則設為 0
+    iacs_per_img[intra_counts == 0] = 0.0
+    inter_per_img[inter_counts == 0] = 0.0
+
+    iacs = iacs_per_img.mean().item()
+    inter = inter_per_img.mean().item()
     margin = iacs - inter
 
-    # ---- Top-K Precision ----
-    # 排除自身（設為 -inf）
-    sim_no_self = sim_matrix.clone()
-    sim_no_self.fill_diagonal_(-float("inf"))
+    # 計算 Macro-mAP (先算類別內平均 mAP_g，再跨類別平均)
+    mAP_groups = []
+    for label_val in unique_labels:
+        group_mask = labels == label_val
+        group_aps = ap_all[group_mask]
+        mAP_groups.append(group_aps.mean().item())
+    macro_map = sum(mAP_groups) / len(mAP_groups) if mAP_groups else 0.0
 
-    topk_metrics = {}
-    max_k = min(max(top_k_values), N - 1)
-    # 一次取最大 k，避免重複排序
-    _, top_indices = sim_no_self.topk(max_k, dim=1)  # [N, max_k]
-
+    topk_results = {}
     for k in top_k_values:
-        k_clamped = min(k, N - 1)
-        topk_labels = labels[top_indices[:, :k_clamped]]  # [N, k]
-        is_same = (topk_labels == labels.unsqueeze(1)).float()
-        precision_at_k = is_same.sum(dim=1) / k_clamped
-        topk_metrics[f"top{k}_precision"] = precision_at_k.mean().item()
+        topk_results[f"top{k}_precision"] = topk_precisions[f"top{k}_precision"].mean().item()
 
     return {
         "IACS": iacs,
         "inter_class_avg_sim": inter,
         "contrastive_margin": margin,
-        **topk_metrics,
+        "macro_mAP": macro_map,
+        **topk_results,
     }
-
-
-def _masked_mean_per_row(
-    matrix: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    """對每行依遮罩計算平均值，回傳 [N] 向量。
-
-    對於遮罩全為 False 的行（例如單一樣本類別），回傳 0.0。
-    """
-    masked = matrix * mask.float()
-    counts = mask.float().sum(dim=1).clamp(min=1.0)
-    return masked.sum(dim=1) / counts

@@ -160,17 +160,20 @@ def create_dataloaders(
         train_ds = SingleViewDataset(
             train_path, t.img_size, t.img_exts, in_channels,
             cache_mode=cache_mode, memory_fraction=memory_fraction,
+            use_preprocessing=getattr(t, "use_preprocessing", True),
         )
         # val 強制不快取：val 每 epoch 只跑一次，且常與 train 共享同一目錄
         val_ds = SingleViewDataset(
             val_path, t.img_size, t.img_exts, in_channels,
             cache_mode="none",
+            use_preprocessing=getattr(t, "use_preprocessing", True),
         )
     else:
         # CPU 增強模式：使用類別內建的專屬 Mean/Std
         aug = EngineeringDrawingAugmentation(
             img_size=t.img_size,
             use_augmentation=t.use_augmentation,
+            use_preprocessing=getattr(t, "use_preprocessing", True),
         )
         train_ds = UnlabeledImageDataset(train_path, t.img_exts, aug, in_channels)
         val_ds = UnlabeledImageDataset(val_path, t.img_exts, aug, in_channels)

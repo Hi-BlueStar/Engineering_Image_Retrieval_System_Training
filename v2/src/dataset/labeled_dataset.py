@@ -53,6 +53,10 @@ class LabeledImageDataset(Dataset):
         img_size: int = 512,
         img_exts: Optional[List[str]] = None,
         in_channels: int = 1,
+        use_preprocessing: bool = True,
+        use_invert: bool = True,
+        mean: Optional[List[float]] = None,
+        std: Optional[List[float]] = None,
     ) -> None:
         self.root = Path(root)
         ext_set = {e.lower() for e in (img_exts or list(_IMG_EXTS))}
@@ -82,13 +86,25 @@ class LabeledImageDataset(Dataset):
         # 排序以確保重現性
         self.samples.sort(key=lambda x: (x[1], x[0].name))
 
-        mean = [0.5] * in_channels
-        std = [0.5] * in_channels
-        self._transform = T.Compose([
-            Letterbox(img_size, fill=255),
+        if mean is None:
+            mean = [0.0394] * in_channels
+        if std is None:
+            std = [0.1752] * in_channels
+
+        transform_ops = []
+        if use_preprocessing:
+            transform_ops.append(Letterbox(img_size, fill=255))
+        else:
+            transform_ops.append(T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BILINEAR))
+        
+        if use_invert:
+            transform_ops.append(T.RandomInvert(p=1.0))
+
+        transform_ops.extend([
             T.ToTensor(),
             T.Normalize(mean=mean, std=std),
         ])
+        self._transform = T.Compose(transform_ops)
 
         logger.info(
             "LabeledImageDataset: root=%s, classes=%d, samples=%d",

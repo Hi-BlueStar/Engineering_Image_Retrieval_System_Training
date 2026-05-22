@@ -10,6 +10,10 @@
 #   python v2/train.py --config v2/configs/default.yaml training.lr=3e-4
 # ==============================================================================
 
+defaults:
+  - _self_
+  - experiment: null
+
 # ------------------------------------------------------------------------------
 # 資料管線設定 (Data Pipeline)
 # ------------------------------------------------------------------------------
@@ -113,6 +117,13 @@ experiment:
   eval_freq: 10
   save_freq: 10
   log_file: "training.log"
+  use_wandb: false
+  use_mlflow: false
+  wandb_project: "engineering_image_retrieval"
+  wandb_entity: null
+  mlflow_tracking_uri: null
+  mlflow_experiment_name: "simsiam_experiment"
+
 
 # ------------------------------------------------------------------------------
 # 日誌設定 (Logging)

@@ -238,7 +238,7 @@ def run_ablation_experiment(
             train_loader=train_loader,
             val_loader=val_loader,
             epochs=t.epochs,
-            epoch_callback=lambda metrics: run_tracker.log_epoch(metrics),
+            epoch_callback=lambda metrics, current_model: run_tracker.log_epoch(metrics),
         )
         train_timer.stop()
 
@@ -311,6 +311,8 @@ def _run_evaluation(cfg: AppConfig, model: torch.nn.Module, device: str) -> dict
             root=labeled_path,
             img_size=t.img_size,
             in_channels=m.in_channels,
+            use_preprocessing=t.use_preprocessing,
+            use_invert=True,
         )
         return evaluate_model(
             model=model,
@@ -336,7 +338,7 @@ def _build_scheduler(optimizer, t):
 
 def _print_summary_table(results: list[dict]) -> None:
     """列印消融實驗彙整表格。"""
-    header = f"{'實驗名稱':<30} {'IACS':>8} {'Inter':>8} {'Margin':>8} {'Top1':>8} {'Top5':>8} {'Top10':>8} {'狀態':>8}"
+    header = f"{'實驗名稱':<30} {'IACS':>8} {'Inter':>8} {'Margin':>8} {'mAP':>8} {'Top1':>8} {'Top5':>8} {'Top10':>8} {'狀態':>8}"
     logger.info(header)
     logger.info("─" * len(header))
     for r in results:
@@ -344,11 +346,12 @@ def _print_summary_table(results: list[dict]) -> None:
             logger.info("%-30s  %-8s", r.get("exp_name", r.get("config", "?")), "FAILED")
             continue
         logger.info(
-            "%-30s  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f  %8s",
+            "%-30s  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f  %8s",
             r.get("exp_name", ""),
             r.get("IACS", 0.0),
             r.get("inter_class_avg_sim", 0.0),
             r.get("contrastive_margin", 0.0),
+            r.get("macro_mAP", 0.0),
             r.get("top1_precision", 0.0),
             r.get("top5_precision", 0.0),
             r.get("top10_precision", 0.0),

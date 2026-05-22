@@ -139,17 +139,23 @@ class SingleViewDataset(Dataset):
         cache_mode: str = "auto",
         memory_fraction: float = 0.6,
         cache_in_memory: Optional[bool] = None,
+        use_preprocessing: bool = True,
     ) -> None:
         self.root = root
         self.img_size = img_size
         self.in_channels = in_channels
+        self.use_preprocessing = use_preprocessing
         self._mode = "L" if in_channels == 1 else "RGB"
         self._letterbox = Letterbox(img_size, fill=255)
         self.images = self._scan(img_exts)
-        self._transform = T.Compose([
-            self._letterbox,
-            T.ToTensor(),
-        ])
+        
+        transform_ops = []
+        if self.use_preprocessing:
+            transform_ops.append(self._letterbox)
+        else:
+            transform_ops.append(T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BILINEAR))
+        transform_ops.append(T.ToTensor())
+        self._transform = T.Compose(transform_ops)
 
         # 向下相容：cache_in_memory 優先覆寫 cache_mode
         if cache_in_memory is not None:
@@ -330,13 +336,17 @@ class SingleViewDataset(Dataset):
         mode = self._mode
         letterbox = self._letterbox
         images = self.images
+        use_prep = self.use_preprocessing
 
         cache = torch.empty((total, c, s, s), dtype=torch.float16)
         log_every = max(1, total // 10)
 
         def _load_one(local_i: int, global_i: int) -> Tuple[int, torch.Tensor]:
             img = Image.open(images[global_i]).convert(mode)
-            img = letterbox(img)
+            if use_prep:
+                img = letterbox(img)
+            else:
+                img = img.resize((s, s), Image.Resampling.BILINEAR)
             arr = np.array(img, dtype=np.float32)
             arr /= 255.0
             t = torch.from_numpy(arr)

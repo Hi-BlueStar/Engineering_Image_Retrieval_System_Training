@@ -64,11 +64,13 @@ class GPUAugmentation(nn.Module):
         img_size: int = 512,
         use_augmentation: bool = True,
         in_channels: int = 1,
+        use_preprocessing: bool = True,
     ) -> None:
         super().__init__()
         self.img_size = img_size
         self.use_augmentation = use_augmentation
         self.in_channels = in_channels
+        self.use_preprocessing = use_preprocessing
 
         # 正規化參數 (基於資料集反轉後計算的 Mean=0.0394, Std=0.1752)
         self._mean = torch.tensor([0.0394] * in_channels)
@@ -95,7 +97,7 @@ class GPUAugmentation(nn.Module):
                 K.RandomAffine(
                     degrees=degrees,
                     translate=translate,
-                    resample=Resample.NEAREST.name,  # 強制最近鄰
+                    resample=Resample.BILINEAR.name,  # 改為雙線性插值以匹配 CPU，減少細線鋸齒
                     padding_mode='zeros',            # 確定性背景填充
                     p=0.7,
                     same_on_batch=False
@@ -104,7 +106,7 @@ class GPUAugmentation(nn.Module):
                 # 2. 學習局部與幾何不變性 (SimSiam 關鍵)
                 K.RandomResizedCrop(
                     size=(self.img_size, self.img_size),
-                    resample=Resample.NEAREST.name,
+                    resample=Resample.BILINEAR.name,
                     align_corners=None,
                     p=0.5,
                     same_on_batch=False
@@ -117,8 +119,7 @@ class GPUAugmentation(nn.Module):
             )
         else:
             return K.AugmentationSequential(
-                K.Resize((self.img_size, self.img_size)),
-                K.RandomInvert(p=1.0),
+                K.Resize((self.img_size, self.img_size), resample=Resample.BILINEAR.name),
                 K.Normalize(mean=mean, std=std),
                 data_keys=["input"],
             )

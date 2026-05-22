@@ -163,6 +163,23 @@ class ExperimentTracker:
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, indent=4, ensure_ascii=False)
 
+        # --- MLOps 追蹤設定 ---
+        self.use_mlflow = getattr(config.experiment, "use_mlflow", False)
+        self.use_wandb = getattr(config.experiment, "use_wandb", False)
+        
+        if self.use_mlflow:
+            try:
+                import mlflow
+                mlflow_uri = getattr(config.experiment, "mlflow_tracking_uri", None)
+                if mlflow_uri:
+                    mlflow.set_tracking_uri(mlflow_uri)
+                mlflow_exp_name = getattr(config.experiment, "mlflow_experiment_name", "simsiam_experiment")
+                mlflow.set_experiment(mlflow_exp_name)
+                logger.info("MLflow 追蹤初始化成功: %s", mlflow_exp_name)
+            except Exception as mlflow_err:
+                logger.warning("MLflow 初始化失敗: %s", mlflow_err)
+                self.use_mlflow = False
+
         self._run_trackers: Dict[str, RunTracker] = {}
         logger.info("實驗追蹤器初始化: %s", self.experiment_dir)
 
@@ -176,7 +193,22 @@ class ExperimentTracker:
             RunTracker: Run 追蹤器實例。
         """
         run_dir = self.experiment_dir / run_name
-        tracker = RunTracker(run_name=run_name, run_dir=run_dir)
+        
+        tracking_cfg = {
+            "use_wandb": self.use_wandb,
+            "use_mlflow": self.use_mlflow,
+            "wandb_project": getattr(self.cfg.experiment, "wandb_project", "engineering_image_retrieval"),
+            "wandb_entity": getattr(self.cfg.experiment, "wandb_entity", None),
+            "mlflow_tracking_uri": getattr(self.cfg.experiment, "mlflow_tracking_uri", None),
+            "mlflow_experiment_name": getattr(self.cfg.experiment, "mlflow_experiment_name", "simsiam_experiment"),
+        }
+        
+        tracker = RunTracker(
+            run_name=run_name,
+            run_dir=run_dir,
+            config_dict=self.cfg.to_dict(),
+            tracking_cfg=tracking_cfg
+        )
         self._run_trackers[run_name] = tracker
         return tracker
 
@@ -234,11 +266,62 @@ class RunTracker:
         run_dir: Run 輸出目錄。
     """
 
-    def __init__(self, run_name: str, run_dir: Path) -> None:
+    def __init__(
+        self,
+        run_name: str,
+        run_dir: Path,
+        config_dict: Optional[Dict[str, Any]] = None,
+        tracking_cfg: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.run_name = run_name
         self.run_dir = run_dir
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._logs: List[Dict[str, Any]] = []
+
+        # --- MLOps 追蹤設定 ---
+        self.tracking_cfg = tracking_cfg or {}
+        self.use_wandb = self.tracking_cfg.get("use_wandb", False)
+        self.use_mlflow = self.tracking_cfg.get("use_mlflow", False)
+        self.wandb_run = None
+        self.mlflow_run = None
+
+        if self.use_wandb:
+            try:
+                import wandb
+                logger.info("正在初始化 W&B Run: %s", run_name)
+                self.wandb_run = wandb.init(
+                    project=self.tracking_cfg.get("wandb_project"),
+                    entity=self.tracking_cfg.get("wandb_entity"),
+                    name=run_name,
+                    config=config_dict,
+                    reinit=True,
+                )
+            except Exception as wandb_err:
+                logger.warning("W&B Run 初始化失敗: %s", wandb_err)
+                self.use_wandb = False
+
+        if self.use_mlflow:
+            try:
+                import mlflow
+                logger.info("正在初始化 MLflow Run: %s", run_name)
+                self.mlflow_run = mlflow.start_run(run_name=run_name, nested=True)
+                if config_dict:
+                    flat_params = self._flatten_dict(config_dict)
+                    safe_params = {str(k): str(v)[:250] for k, v in flat_params.items()}
+                    mlflow.log_params(safe_params)
+            except Exception as mlflow_err:
+                logger.warning("MLflow Run 初始化失敗: %s", mlflow_err)
+                self.use_mlflow = False
+
+    def _flatten_dict(self, d: Dict[str, Any], parent_key: str = "", sep: str = ".") -> Dict[str, Any]:
+        items: List[tuple] = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self._flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append((new_key, v))
+        return dict(items)
 
     def log_epoch(self, metrics: Dict[str, Any]) -> None:
         """記錄單個 epoch 的指標並即時持久化至 CSV（append 模式）。
@@ -255,6 +338,47 @@ class RunTracker:
             header=write_header,
             index=False,
         )
+
+        if self.use_wandb and self.wandb_run is not None:
+            try:
+                import wandb
+                epoch = metrics.get("epoch", 0)
+                wandb.log(metrics, step=epoch)
+            except Exception as wandb_err:
+                logger.warning("W&B log 失敗: %s", wandb_err)
+
+        if self.use_mlflow and self.mlflow_run is not None:
+            try:
+                import mlflow
+                epoch = metrics.get("epoch", 0)
+                numeric_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+                mlflow.log_metrics(numeric_metrics, step=epoch)
+            except Exception as mlflow_err:
+                logger.warning("MLflow log 失敗: %s", mlflow_err)
+
+    def close(self, status: str = "FINISHED") -> None:
+        """關閉追蹤器（完成 W&B 或 MLflow 的 Run）。"""
+        if self.use_wandb and self.wandb_run is not None:
+            try:
+                import wandb
+                logger.info("正在完成 W&B Run: %s", self.run_name)
+                wandb.finish()
+            except Exception as wandb_err:
+                logger.warning("W&B Run 關閉失敗: %s", wandb_err)
+            finally:
+                self.wandb_run = None
+                self.use_wandb = False
+
+        if self.use_mlflow and self.mlflow_run is not None:
+            try:
+                import mlflow
+                logger.info("正在完成 MLflow Run: %s (status=%s)", self.run_name, status)
+                mlflow.end_run(status="FINISHED" if status == "FINISHED" else "FAILED")
+            except Exception as mlflow_err:
+                logger.warning("MLflow Run 關閉失敗: %s", mlflow_err)
+            finally:
+                self.mlflow_run = None
+                self.use_mlflow = False
 
     def get_logs_dataframe(self) -> pd.DataFrame:
         """取得所有 epoch 日誌的 DataFrame。

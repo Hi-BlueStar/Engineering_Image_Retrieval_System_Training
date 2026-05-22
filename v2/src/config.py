@@ -139,7 +139,7 @@ class ModelConfig:
     in_channels: int = 1
     proj_dim: int = 2048
     proj_hidden: Optional[int] = None
-    pred_hidden: int = 512
+    pred_hidden: int = 128
 
 
 @dataclass
@@ -175,6 +175,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     use_augmentation: bool = True
     use_gpu_augmentation: bool = True
+    use_preprocessing: bool = True
     cache_in_memory: bool = False  # 向下相容；True → cache_mode="full"，False 不影響 cache_mode
     cache_mode: str = "auto"  # "auto" | "full" | "partitioned" | "none"
     cache_memory_fraction: float = 0.6  # auto/partitioned 模式下，可用 RAM 的最大使用比例
@@ -200,6 +201,15 @@ class ExperimentConfig:
     eval_freq: int = 10
     save_freq: int = 10
     log_file: str = "training.log"
+
+    # --- MLOps 追蹤設定 ---
+    use_wandb: bool = False
+    use_mlflow: bool = False
+    wandb_project: str = "engineering_image_retrieval"
+    wandb_entity: Optional[str] = None
+    mlflow_tracking_uri: Optional[str] = None
+    mlflow_experiment_name: str = "simsiam_experiment"
+
 
 
 @dataclass
@@ -307,6 +317,38 @@ class AppConfig:
         obj: AppConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
 
         logger.info("設定載入完成: %s (含 %d 個 CLI 覆寫)", yaml_path, len(cli_overrides or []))
+        return obj
+
+    @classmethod
+    def from_hydra(
+        cls,
+        config_name: str = "config",
+        config_dir: Optional[str] = None,
+        overrides: Optional[Sequence[str]] = None,
+    ) -> "AppConfig":
+        """使用 Hydra Compose API 載入並組合設定。"""
+        from hydra import compose, initialize_config_dir
+        import os
+        
+        if config_dir is None:
+            # 預設為 configs 目錄，相對於專案根目錄
+            config_dir = str(Path(__file__).resolve().parent.parent / "configs")
+            
+        abs_config_dir = os.path.abspath(config_dir)
+        
+        # 為了避免重複 initialize，清除先前的 GlobalHydra 實例
+        from hydra.core.global_hydra import GlobalHydra
+        if GlobalHydra.instance().is_initialized():
+            GlobalHydra.instance().clear()
+            
+        with initialize_config_dir(config_dir=abs_config_dir, version_base="1.3"):
+            cfg = compose(config_name=config_name, overrides=list(overrides or []))
+            
+        schema = OmegaConf.structured(cls)
+        merged: DictConfig = OmegaConf.merge(schema, cfg)
+        obj: AppConfig = OmegaConf.to_object(merged)
+        
+        logger.info("Hydra 設定載入與組合完成: %s/%s.yaml (含 %d 個 overrides)", config_dir, config_name, len(overrides or []))
         return obj
 
     # ----------------------------------------------------------

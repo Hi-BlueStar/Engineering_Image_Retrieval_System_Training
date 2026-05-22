@@ -113,13 +113,15 @@ def _load_model(cfg: AppConfig) -> Tuple[SimSiam, str, dict]:
     return model, device, ckpt_meta
 
 
-def _build_dataset(root: str, cfg: AppConfig) -> LabeledImageDataset:
+def _build_dataset(root: str, cfg: AppConfig, use_preprocessing: bool = True) -> LabeledImageDataset:
     """建立 LabeledImageDataset（無任何 Data Augmentation）。"""
     return LabeledImageDataset(
         root=Path(root),
         img_size=cfg.training.img_size,
         img_exts=cfg.training.img_exts,
         in_channels=cfg.model.in_channels,
+        use_preprocessing=use_preprocessing,
+        use_invert=True,
     )
 
 
@@ -185,6 +187,7 @@ def _print_comparison_table(
     row("IACS (intra-class sim)", "IACS")
     row("Inter-class sim", "inter_class_avg_sim")
     row("Contrastive Margin", "contrastive_margin")
+    row("Macro-mAP (LOO)", "macro_mAP")
     print(sep)
     for k in top_k_values:
         row(f"Precision@{k}", f"top{k}_precision")
@@ -199,7 +202,7 @@ def _print_comparison_table(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="SimSiam 工程圖檢索 — 獨立評估管線",
+        description="SimSiam 工程圖檢檢 — 獨立評估管線",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "CLI 覆寫範例 (OmegaConf dotlist):\n"
@@ -255,7 +258,7 @@ def main() -> None:
     model, device, ckpt_meta = _load_model(cfg)
 
     # --- 評估原始轉檔影像（無前處理） ---
-    raw_ds = _build_dataset(ev.labeled_data_path, cfg)
+    raw_ds = _build_dataset(ev.labeled_data_path, cfg, use_preprocessing=False)
     raw_csv_path = str(Path(ev.output_path).with_name("eval_results_raw.csv"))
     raw_metrics = _run_evaluation(model, raw_ds, cfg, device, label="raw", output_csv_path=raw_csv_path)
 
@@ -263,7 +266,7 @@ def main() -> None:
     pre_metrics: Optional[Dict[str, float]] = None
     pre_ds: Optional[LabeledImageDataset] = None
     if ev.preprocessed_labeled_data_path:
-        pre_ds = _build_dataset(ev.preprocessed_labeled_data_path, cfg)
+        pre_ds = _build_dataset(ev.preprocessed_labeled_data_path, cfg, use_preprocessing=True)
         pre_csv_path = str(Path(ev.output_path).with_name("eval_results_preprocessed.csv"))
         pre_metrics = _run_evaluation(
             model, pre_ds, cfg, device, label="preprocessed", output_csv_path=pre_csv_path

@@ -38,11 +38,12 @@ class EngineeringDrawingAugmentation:
         mean: Tuple[float, ...] = (0.0394,),
         std: Tuple[float, ...] = (0.1752,),
         use_augmentation: bool = True,
+        use_preprocessing: bool = True,
     ) -> None:
         if use_augmentation:
             self._transform = T.Compose([
-                # T.RandomInvert(p=1.0), # 背景反轉
-                T.RandomResizedCrop(size=img_size, scale=(0.2, 1.0)),
+                T.RandomInvert(p=0.5),
+                T.RandomResizedCrop(size=img_size, scale=(0.2, 1.0), interpolation=T.InterpolationMode.BILINEAR),
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
                 T.RandomRotation(degrees=180, fill=0),
@@ -50,13 +51,18 @@ class EngineeringDrawingAugmentation:
                 T.Normalize(mean=mean, std=std),
             ])
         else:
-            # 消融實驗：無增強版（僅 Letterbox + normalize）
-            self._transform = T.Compose([
-                Letterbox(img_size, fill=255),
-                T.RandomInvert(p=1.0),
+            # 消融實驗：無增強版
+            transform_ops = []
+            if use_preprocessing:
+                transform_ops.append(Letterbox(img_size, fill=255))
+            else:
+                transform_ops.append(T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BILINEAR))
+            
+            transform_ops.extend([
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
             ])
+            self._transform = T.Compose(transform_ops)
 
     def __call__(
         self, img: Image.Image

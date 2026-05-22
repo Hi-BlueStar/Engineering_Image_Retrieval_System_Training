@@ -1,0 +1,18 @@
+# @package _global_
+# ==============================================================================
+# 實驗配置：Exp A（啟用前處理，啟用增強）
+# ==============================================================================
+
+data:
+  use_connected_components: true
+  use_topology_analysis: true
+  use_topology_pruning: true
+  remove_gifu_logo: true
+  skip_preprocessing: false
+
+training:
+  use_preprocessing: true
+  use_augmentation: true
+
+experiment:
+  exp_name: "exp_a"

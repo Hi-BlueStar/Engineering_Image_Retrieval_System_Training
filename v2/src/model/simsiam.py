@@ -98,7 +98,7 @@ class SimSiam(nn.Module):
         backbone: str = "resnet18",
         proj_dim: int = 2048,
         proj_hidden: int | None = None,
-        pred_hidden: int = 512,
+        pred_hidden: int = 128,
         dropout: float = 0.0,
         pretrained: bool = False,
         in_channels: int = 1,
@@ -109,10 +109,19 @@ class SimSiam(nn.Module):
         self.backbone, feat_dim = create_backbone(
             name=backbone, pretrained=pretrained, in_channels=in_channels
         )
-
+        
         # 2. Projector（proj_hidden=None 時自動使用 backbone feat_dim）
         # 依 SimSiam 論文，Projector 應為 3 層 MLP
-        effective_hidden = proj_hidden if proj_hidden is not None else feat_dim
+        if proj_hidden is None:
+            if feat_dim != 512:
+                logger.warning(
+                    "Backbone 特徵維度 (%d) 不等於 512。依計畫書，將 Projector 隱藏層維度強制固定為 512。",
+                    feat_dim
+                )
+            effective_hidden = 512
+        else:
+            effective_hidden = proj_hidden
+
         self.projector = _mlp(
             feat_dim, effective_hidden, proj_dim, num_layers=3, bn_last=True, dropout=dropout
         )

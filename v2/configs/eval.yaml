@@ -44,7 +44,7 @@ model:
   in_channels: 1
   proj_dim: 2048
   proj_hidden: null
-  pred_hidden: 512
+  pred_hidden: 128
 
 # ------------------------------------------------------------------------------
 # 訓練設定 — 評估只需要 img_size 與 img_exts

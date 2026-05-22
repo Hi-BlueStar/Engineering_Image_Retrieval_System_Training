@@ -1,19 +1,20 @@
 # @package _global_
 # ==============================================================================
-# 實驗配置：Exp B T_small (啟用前處理，無增強，BatchSize=32，訓練集=T_small)
+# 實驗配置：Exp B T_small (無前處理，啟用增強，BatchSize=32，訓練集=T_small)
 # ==============================================================================
 
 data:
-  use_connected_components: true
-  use_topology_analysis: true
-  use_topology_pruning: true
-  remove_gifu_logo: true
+  use_connected_components: false
+  use_topology_analysis: false
+  use_topology_pruning: false
+  remove_gifu_logo: false
   skip_preprocessing: false
   dataset_dir: "dataset_v2/T_small"
+  labeled_data_path: "dataset_v2/V"
 
 training:
-  use_preprocessing: true
-  use_augmentation: false
+  use_preprocessing: false
+  use_augmentation: true
   batch_size: 32
 
 experiment:

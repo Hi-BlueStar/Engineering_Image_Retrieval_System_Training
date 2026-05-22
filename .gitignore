@@ -20,6 +20,7 @@ chroma_db/
 results/
 /data/
 /dataset/
+dataset_v2/
 output/
 outputs/
 outputs_v2/
@@ -30,6 +31,7 @@ docs/
 .env
 *.rar
 temp/
+temp_outputs/
 
 .$專案規劃.drawio.bkp
 

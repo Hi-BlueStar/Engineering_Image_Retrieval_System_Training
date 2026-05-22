@@ -170,13 +170,20 @@ def build_symlinks(mapping: dict, target_dir: Path):
         for p_str in paths:
             p = Path(p_str)
             link_path = cat_dir / p.name
-            if not link_path.exists():
+            if link_path.is_symlink() or link_path.exists():
                 try:
-                    link_path.symlink_to(p)
+                    link_path.unlink()
                 except Exception:
-                    # Windows 或不支援 symlink 環境下改用拷貝
-                    import shutil
+                    pass
+            try:
+                link_path.symlink_to(p.resolve())
+            except Exception:
+                # Windows 或不支援 symlink 環境下改用拷貝
+                import shutil
+                try:
                     shutil.copy(p, link_path)
+                except Exception:
+                    pass
 
 # ----------------------------------------------------------------------
 # Streamlit 介面與狀態管理
@@ -478,8 +485,20 @@ def main():
                 build_symlinks({"Component_Dataset/train": t_large_train, "Component_Dataset/test": t_large_test}, out_root / "T_large" / "Run_01_Seed_42")
                 
                 # 建立 驗證集 V 結構（包含 Query 與 Gallery）
-                # 每個 Query 擁有各自的子目錄作為評估類別
-                build_symlinks({"V": list(all_v_images)}, out_root / "V")
+                # 每個 Query 擁有各自的子目錄以作為類別，避免分類資訊消失與指標平凡化
+                v_mapping = {}
+                for i, seed in enumerate(st.session_state.seeds):
+                    group_name = f"group_{i:03d}"
+                    group_images = [seed] + st.session_state.gt_selections.get(seed, [])
+                    # 確保不重複
+                    group_images = list(dict.fromkeys(group_images))
+                    v_mapping[group_name] = group_images
+
+                # 每個 Distractor 放入獨立資料夾以避免互相匹配
+                for j, dist in enumerate(chosen_distractors):
+                    v_mapping[f"distractor_{j:04d}"] = [dist]
+
+                build_symlinks(v_mapping, out_root / "V")
                 
                 st.success("實驗資料集目錄結構與符號連結已成功建立！")
                 st.balloons()

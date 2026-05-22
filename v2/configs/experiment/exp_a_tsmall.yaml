@@ -10,6 +10,7 @@ data:
   remove_gifu_logo: true
   skip_preprocessing: false
   dataset_dir: "dataset_v2/T_small"
+  labeled_data_path: "dataset_v2/V"
 
 training:
   use_preprocessing: true

@@ -40,7 +40,9 @@ def compute_retrieval_metrics(
             - ``macro_mAP``: 宏觀平均平均精度 (Macro-mAP)
             - ``top{k}_precision``: 各 k 值的 Precision@K
     """
-    device = features.device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    features = features.to(device)
+    labels = labels.to(device)
     N = features.shape[0]
 
     # L2 normalize → 餘弦相似度 = 內積
@@ -64,13 +66,13 @@ def compute_retrieval_metrics(
     for i in range(0, N, eval_batch_size):
         end_idx = min(i + eval_batch_size, N)
         batch_feats = feat_norm[i:end_idx]  # [B, D]
-        batch_labels = labels[i:end_idx].to(device)  # [B]
+        batch_labels = labels[i:end_idx]  # [B]
 
         # 計算當前 Batch 對所有 Gallery 的相似度 -> [B, N]
         sim_b = batch_feats @ feat_norm.T  # [B, N]
 
         # 類別比對遮罩 -> [B, N]
-        same_class_b = batch_labels.unsqueeze(1) == labels.unsqueeze(0).to(device)  # [B, N]
+        same_class_b = batch_labels.unsqueeze(1) == labels.unsqueeze(0)  # [B, N]
 
         # 建立 Self-mask (排除自身)
         self_mask_b = torch.zeros_like(same_class_b, dtype=torch.bool)
@@ -96,7 +98,7 @@ def compute_retrieval_metrics(
         sorted_indices = sorted_indices[:, :-1]  # 移除最後一項 (即被設為 -inf 的自身)
 
         # 取得排序後的標籤
-        sorted_labels = labels[sorted_indices.cpu()].to(device)  # [B, N-1]
+        sorted_labels = labels[sorted_indices]  # [B, N-1]
         is_match = (sorted_labels == batch_labels.unsqueeze(1)).float()  # [B, N-1]
 
         # 計算累積匹配數與各 rank 上的 Precision

@@ -8,8 +8,9 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description="自動化執行所有 SimSiam 圖像檢索實驗")
-    parser.add_argument("--epochs", type=int, default=1, help="每個實驗的訓練 Epoch 數（預設小規模測試為 1）")
-    parser.add_argument("--max-batches", type=int, default=2, help="每個 Epoch 的最大 Batch 數（預設小規模測試為 2）")
+    parser.add_argument("--scale", type=str, default="tsmall", choices=["tsmall", "tlarge"], help="實驗規模大小 (tsmall 或 tlarge)")
+    parser.add_argument("--epochs", type=int, default=10, help="每個實驗的訓練 Epoch 數（預設小規模測試為 1）")
+    parser.add_argument("--max-batches", type=int, default=128, help="每個 Epoch 的最大 Batch 數（預設小規模測試為 2）")
     parser.add_argument("--output-dir", type=str, default="outputs_v2", help="輸出目錄路徑")
     parser.add_argument("--eval-freq", type=int, default=1, help="評估頻率（Epochs）")
     args = parser.parse_args()
@@ -17,7 +18,7 @@ def main():
     project_root = Path(__file__).resolve().parent.parent.parent
     train_script = project_root / "v2" / "train.py"
     
-    experiments = ["baseline", "exp_a", "exp_b"]
+    experiments = [f"baseline_{args.scale}", f"exp_a_{args.scale}", f"exp_b_{args.scale}"]
     
     print("=" * 60)
     print("啟動自動化實驗管線")

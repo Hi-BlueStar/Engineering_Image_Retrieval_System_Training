@@ -11,6 +11,7 @@ services:
     shm_size: '100gb'
     ports:
       - "2222:22"
+      - "8889:8888"
 
     # GPU 配置 (新版 Docker Compose 語法)
     deploy:

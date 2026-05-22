@@ -39,6 +39,15 @@ from rich.progress import (
 )
 
 from src.logger import get_logger
+from src.data.logo_removal import remove_logo
+from src.data.topology import (
+    analyze_topology,
+    sort_crops_by_topology,
+    topology_guided_mask,
+    topology_preserving_pruning,
+)
+from src.data.logo_removal import find_logo_regions
+from src.data.topology import analyze_topology, topology_preserving_pruning
 
 logger = get_logger(__name__)
 
@@ -74,7 +83,7 @@ class PreprocessConfig:
     output_root: str
     max_workers: int = 12
     top_n: int = 5
-    max_bbox_ratio: float = 0.9
+    max_bbox_ratio: float = 0.8
     min_bbox_area: int = 0
     padding: int = 2
 
@@ -199,14 +208,6 @@ def _process_one(
 ) -> None:
     """處理單張影像：前處理 → 生成獨立元件圖。"""
     cv2.setNumThreads(0)
-    from src.data.logo_removal import remove_logo
-    from src.data.topology import (
-        analyze_topology,
-        sort_crops_by_topology,
-        topology_guided_mask,
-        topology_preserving_pruning,
-    )
-
 
     path = Path(img_path)
 
@@ -343,7 +344,6 @@ def discover_components(
     # 2. Logo 偵測與過濾 (延後到此處理)
     filtered_indices = set()
     if remove_logo_cfg:
-        from src.data.logo_removal import find_logo_regions
         logo_boxes = find_logo_regions(
             binary,
             template_path=logo_template_path,
@@ -364,8 +364,6 @@ def discover_components(
             logger.debug("過濾掉 %d 個 Logo 元件", len(filtered_indices))
 
     # 3. 拓撲分析與剪枝 (先分析拓撲，再做剪枝)
-    from src.data.topology import analyze_topology, topology_preserving_pruning
-
     components = []
     for comp in all_components:
         if comp["idx"] in filtered_indices:

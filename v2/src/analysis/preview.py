@@ -260,7 +260,9 @@ class PreprocessingPreview:
                     postprocessed = apply_crop_postprocess(crop, pad)
                     resized = _letterbox_np(postprocessed, size)
                     stages[f"resized_{i + 1}"] = resized
-                    stages[f"aug_sample_{i + 1}"] = self._simulate_augmentation(resized, size)
+                    aug1, aug2 = self._simulate_augmentation(resized, size)
+                    stages[f"aug1_{i + 1}"] = aug1
+                    stages[f"aug2_{i + 1}"] = aug2
 
         else:
             # ── Fallback：CC 模式但無元件，或全圖模式 ──
@@ -294,14 +296,16 @@ class PreprocessingPreview:
                 size = self.params["img_size"]
                 resized = _letterbox_np(padded_current, size)
                 stages["resized_full"] = resized
-                stages["aug_sample_full"] = self._simulate_augmentation(resized, size)
+                aug1, aug2 = self._simulate_augmentation(resized, size)
+                stages["aug1_full"] = aug1
+                stages["aug2_full"] = aug2
 
         out_path = self.output_dir / f"preview_{idx:03d}_{img_path.stem}.png"
         self._generate_figure(img_path, stages, labels_info, out_path)
         return out_path
 
-    def _simulate_augmentation(self, img: np.ndarray, img_size: int) -> np.ndarray:
-        """以 GPUAugmentation 生成增強視角。"""
+    def _simulate_augmentation(self, img: np.ndarray, img_size: int) -> Tuple[np.ndarray, np.ndarray]:
+        """以 GPUAugmentation 生成兩個增強視角。"""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         aug = GPUAugmentation(
             img_size=img_size, use_augmentation=True, in_channels=1
@@ -315,12 +319,20 @@ class PreprocessingPreview:
 
         with torch.no_grad():
             # GPUAugmentation.create_views returns (view1, view2)
-            v1, _ = aug.create_views(tensor)
+            v1, v2 = aug.create_views(tensor)
 
-        # v1 is [1, 1, H, W] normalized
-        # Denormalize: v * 0.5 + 0.5
-        arr = (v1.squeeze(0).squeeze(0).cpu().numpy() * 0.5 + 0.5) * 255
-        return np.clip(arr, 0, 255).astype(np.uint8)
+        # v1 and v2 are [1, 1, H, W] normalized
+        mean = aug._mean.item() if hasattr(aug, "_mean") else 0.0394
+        std = aug._std.item() if hasattr(aug, "_std") else 0.1752
+
+        # Denormalize using mean and std
+        arr1 = (v1.squeeze(0).squeeze(0).cpu().numpy() * std + mean) * 255.0
+        arr2 = (v2.squeeze(0).squeeze(0).cpu().numpy() * std + mean) * 255.0
+
+        return (
+            np.clip(arr1, 0, 255).astype(np.uint8),
+            np.clip(arr2, 0, 255).astype(np.uint8)
+        )
 
     # ------------------------------------------------------------------ #
     # CC extraction with visualisation
@@ -379,65 +391,127 @@ class PreprocessingPreview:
         labels_info: List[Dict],
         out_path: Path,
     ) -> None:
-        stage_labels: Dict[str, str] = {
-            "original": "原始影像",
-            "binary": "二值化遮罩 (Otsu)",
-            "cc_detection": "CC 偵測 (含 Logo 過濾)",
-            # 全圖模式下 logo 移除後的灰階影像
-            "preprocessed_gray": "前處理後影像 (Logo 移除)",
-            "full_image": "最終完整影像 (含 Padding)",
-            "resized_full": f"訓練輸入 (Letterbox {self.params.get('img_size', '?')}px)",
-            "aug_sample_full": "增強示意 (SimSiam 雙視角之一)",
-        }
-        for i in range(20):
-            stage_labels[f"pruning_iter_{i + 1}"] = f"拓撲剪枝 Iter {i + 1}"
-            stage_labels[f"comp_{i + 1}"] = f"元件 {i + 1} (含 Padding)"
-            stage_labels[f"resized_{i + 1}"] = f"訓練輸入 {i + 1} (Letterbox)"
-            stage_labels[f"aug_sample_{i + 1}"] = f"增強示意 {i + 1}"
+        # Separate base keys and component keys
+        base_keys = [
+            k for k in stages.keys()
+            if not (
+                k.startswith("comp_")
+                or k.startswith("resized_")
+                or k.startswith("aug1_")
+                or k.startswith("aug2_")
+                or k.startswith("aug_sample_")
+                or k == "full_image"
+                or k == "resized_full"
+                or k == "aug1_full"
+                or k == "aug2_full"
+            )
+        ]
 
-        n = len(stages)
-        cols = min(n, 4)
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4.5 * rows))
+        comp_indices = sorted(list({
+            int(k.split("_")[-1])
+            for k in stages.keys()
+            if k.startswith("comp_")
+        }))
+        num_components = len(comp_indices)
 
-        if n == 1:
-            axes_flat = [axes]
-        elif rows == 1 or cols == 1:
-            axes_flat = list(axes) if hasattr(axes, "__iter__") else [axes]
-        else:
-            axes_flat = axes.flatten()
+        ncols = 4
+        base_rows = (len(base_keys) + 3) // 4
+        component_rows = num_components if num_components > 0 else 1
+        total_rows = base_rows + component_rows
 
-        for ax, (key, img) in zip(axes_flat[:n], stages.items()):
-            if img is None:
-                ax.axis("off")
-                continue
+        fig, axes = plt.subplots(total_rows, ncols, figsize=(16, 4.5 * total_rows))
 
-            if len(img.shape) == 3:
-                ax.imshow(img)
-            else:
-                ax.imshow(img, cmap="gray", vmin=0, vmax=255)
+        if total_rows == 1:
+            axes = np.expand_dims(axes, axis=0)
 
-            ax.set_title(stage_labels.get(key, key), fontsize=9, pad=4)
+        def get_base_label(key: str) -> str:
+            if key == "original":
+                return "原始影像"
+            if key == "binary":
+                return "二值化遮罩 (Otsu)"
+            if key == "cc_detection":
+                return "CC 偵測 (含 Logo 過濾)"
+            if key == "preprocessed_gray":
+                return "前處理後影像 (Logo 移除)"
+            if key.startswith("pruning_iter_"):
+                iter_num = key.split("_")[-1]
+                return f"拓撲剪枝 Iter {iter_num}"
+            return key
+
+        # 1. Plot base stages
+        for idx, key in enumerate(base_keys):
+            row = idx // ncols
+            col = idx % ncols
+            ax = axes[row, col]
+            img = stages[key]
+
+            if img is not None:
+                if len(img.shape) == 3:
+                    ax.imshow(img)
+                else:
+                    ax.imshow(img, cmap="gray", vmin=0, vmax=255)
+                ax.set_title(get_base_label(key), fontsize=10, pad=4)
+
+                if key == "cc_detection" and labels_info:
+                    patches = [
+                        mpatches.Patch(
+                            facecolor=info["color"],
+                            label=f"CC{info['rank']} (Holes:{info['n_holes']}, Area:{info['area']:,})",
+                        )
+                        for info in labels_info
+                    ]
+                    ax.legend(handles=patches, fontsize=6, loc="lower right", framealpha=0.7)
             ax.axis("off")
 
-            if key == "cc_detection" and labels_info:
-                patches = [
-                    mpatches.Patch(
-                        facecolor=info["color"],
-                        label=f"CC{info['rank']} (Holes:{info['n_holes']}, Area:{info['area']:,})",
-                    )
-                    for info in labels_info
+        # Turn off unused axes in base rows
+        for idx in range(len(base_keys), base_rows * ncols):
+            row = idx // ncols
+            col = idx % ncols
+            axes[row, col].axis("off")
+
+        # 2. Plot component-specific stages (or full image fallback)
+        if num_components > 0:
+            for idx, comp_idx in enumerate(comp_indices):
+                row = base_rows + idx
+                row_items = [
+                    (stages.get(f"comp_{comp_idx}"), f"元件 {comp_idx} (含 Padding)"),
+                    (stages.get(f"resized_{comp_idx}"), f"訓練輸入 {comp_idx} (Letterbox)"),
+                    (stages.get(f"aug1_{comp_idx}"), f"增強視角 1 (View 1)"),
+                    (stages.get(f"aug2_{comp_idx}"), f"增強視角 2 (View 2)"),
                 ]
-                ax.legend(handles=patches, fontsize=6, loc="lower right", framealpha=0.7)
-
-        for ax in axes_flat[n:]:
-            ax.axis("off")
+                for col, (img, label) in enumerate(row_items):
+                    ax = axes[row, col]
+                    if img is not None:
+                        if len(img.shape) == 3:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(img, cmap="gray", vmin=0, vmax=255)
+                        ax.set_title(label, fontsize=10, pad=4)
+                    ax.axis("off")
+        else:
+            # Fallback (full-image) row
+            row = base_rows
+            row_items = [
+                (stages.get("full_image"), "最終完整影像 (含 Padding)"),
+                (stages.get("resized_full"), f"訓練輸入 (Letterbox {self.params.get('img_size', '?')}px)"),
+                (stages.get("aug1_full"), "增強視角 1 (View 1)"),
+                (stages.get("aug2_full"), "增強視角 2 (View 2)"),
+            ]
+            for col, (img, label) in enumerate(row_items):
+                ax = axes[row, col]
+                if img is not None:
+                    if len(img.shape) == 3:
+                        ax.imshow(img)
+                    else:
+                        ax.imshow(img, cmap="gray", vmin=0, vmax=255)
+                    ax.set_title(label, fontsize=10, pad=4)
+                ax.axis("off")
 
         fig.suptitle(
             f"{img_path.name}",
             fontsize=12,
             fontweight="bold",
-            y=1.02 if rows == 1 else 1.05,
+            y=1.02 if total_rows == 1 else 1.01,
         )
 
         # 參數標注（對應 prepare_data.py PreprocessConfig 欄位）

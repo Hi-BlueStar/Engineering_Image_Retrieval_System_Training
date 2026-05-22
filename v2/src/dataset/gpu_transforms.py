@@ -97,10 +97,7 @@ class GPUAugmentation(nn.Module):
                 K.RandomVerticalFlip(p=0.5, same_on_batch=False),
                 K.RandomRotation(degrees=180.0, p=0.5, same_on_batch=False),
 
-                # 3. 模糊 (模擬掃描或低解析度情況)
-                K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.3),
-
-                # 4. 正規化
+                # 3. 正規化
                 K.Normalize(mean=mean, std=std),
 
                 data_keys=["input"],

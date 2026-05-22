@@ -22,6 +22,7 @@ results/
 /dataset/
 output/
 outputs/
+preview_outputs/
 demo/
 docs/
 .devcontainer

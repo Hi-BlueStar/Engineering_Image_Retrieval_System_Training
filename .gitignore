@@ -22,6 +22,7 @@ results/
 /dataset/
 output/
 outputs/
+outputs_v2/
 preview_outputs/
 demo/
 docs/
@@ -36,3 +37,5 @@ temp/
 
 src/ChromaDB_Test/
 old/
+/data
+

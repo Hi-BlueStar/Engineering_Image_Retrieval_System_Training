@@ -141,7 +141,7 @@ class SingleViewDataset(Dataset):
         cache_in_memory: Optional[bool] = None,
         use_preprocessing: bool = True,
     ) -> None:
-        self.root = root
+        self.root = Path(root).resolve()
         self.img_size = img_size
         self.in_channels = in_channels
         self.use_preprocessing = use_preprocessing
@@ -430,7 +430,7 @@ class UnlabeledImageDataset(Dataset):
         transform,
         in_channels: int = 1,
     ) -> None:
-        self.root = root
+        self.root = Path(root).resolve()
         self.transform = transform
         self._mode = "L" if in_channels == 1 else "RGB"
         self.images = self._scan(img_exts)

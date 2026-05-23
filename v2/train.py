@@ -41,6 +41,8 @@ def set_seed(seed: int) -> None:
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(PROJECT_ROOT.parent) not in sys.path:
+    sys.path.insert(1, str(PROJECT_ROOT.parent))
 
 from src.config import AppConfig
 from src.dataset.dataloader import create_dataloaders
@@ -425,6 +427,7 @@ def main() -> None:
             in_channels=cfg.model.in_channels,
             use_preprocessing=cfg.training.use_preprocessing,
             use_invert=True,
+            cache_in_memory=True,
         )
 
     # --- GPU 核心優化 ---

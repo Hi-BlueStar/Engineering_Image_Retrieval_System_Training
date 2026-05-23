@@ -57,11 +57,16 @@ def evaluate_model(
     if hasattr(model, "_orig_mod"):
         model = model._orig_mod
 
+    # 若有標籤資料集已在記憶體中快取，使用 num_workers=0 速度最快且免去 IPC 開銷
+    actual_num_workers = num_workers
+    if getattr(labeled_dataset, "_cache_images", None) is not None:
+        actual_num_workers = 0
+
     loader = DataLoader(
         labeled_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=actual_num_workers,
         pin_memory=(device == "cuda"),
     )
 

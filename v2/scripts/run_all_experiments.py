@@ -12,7 +12,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="每個實驗的訓練 Epoch 數（預設小規模測試為 1）")
     parser.add_argument("--max-batches", type=int, default=128, help="每個 Epoch 的最大 Batch 數（預設小規模測試為 2）")
     parser.add_argument("--output-dir", type=str, default="outputs_v2", help="輸出目錄路徑")
-    parser.add_argument("--eval-freq", type=int, default=1, help="評估頻率（Epochs）")
+    parser.add_argument("--eval-freq", type=int, default=10, help="評估頻率（Epochs）")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent.parent

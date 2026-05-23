@@ -12,6 +12,11 @@ services:
     ports:
       - "2222:22"
       - "8889:8888"
+      - "8502:8501"
+
+    # 新增以下設定以解析宿主機 IP
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # GPU 配置 (新版 Docker Compose 語法)
     deploy:

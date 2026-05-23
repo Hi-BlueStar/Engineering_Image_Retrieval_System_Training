@@ -22,7 +22,9 @@ def build_symlinks(mapping: dict, target_dir: Path):
                 except Exception:
                     pass
             try:
-                link_path.symlink_to(p.resolve())
+                import os
+                rel_path = os.path.relpath(p.resolve(), start=link_path.parent)
+                link_path.symlink_to(rel_path)
             except Exception:
                 # Windows 或不支援 symlink 環境下改用拷貝
                 try:

@@ -190,17 +190,27 @@ def create_dataloaders(
             train_ds.n_partitions, len(train_loader),
         )
     else:
+        actual_workers = t.num_workers
+        if (
+            use_gpu_augmentation
+            and isinstance(train_ds, SingleViewDataset)
+            and getattr(train_ds, "_resolved_mode", "") == "full"
+            and len(train_ds) < 2000
+        ):
+            actual_workers = 0
+            logger.info("偵測到全快取小資料集，自動將 num_workers 設為 0 以避免多進程 IPC 開銷")
+
         train_loader = DataLoader(
             train_ds,
             batch_size=t.batch_size,
             shuffle=True,
-            num_workers=t.num_workers,
+            num_workers=actual_workers,
             pin_memory=True,
-            prefetch_factor=pf,
+            prefetch_factor=pf if actual_workers > 0 else None,
             drop_last=len(train_ds) >= t.batch_size,
             generator=generator,
             worker_init_fn=worker_init,
-            persistent_workers=t.num_workers > 0,
+            persistent_workers=t.num_workers > 0 and actual_workers > 0,
         )
 
     val_loader = DataLoader(

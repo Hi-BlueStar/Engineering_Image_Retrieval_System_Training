@@ -28,8 +28,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.model.backbone import create_backbone
-from src.logger import get_logger
+from v2.src.model.backbone import create_backbone
+from v2.src.logger import get_logger
 
 logger = get_logger(__name__)
 

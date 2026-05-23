@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 
-from src.logger import get_logger
+from v2.src.logger import get_logger
 
 logger = get_logger(__name__)
 

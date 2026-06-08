@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>🛠️ 專家人工篩選與資料集分割建置介面</title>
+    <!-- Modern web font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Header Bar -->
+        <header class="main-header">
+            <div class="brand">
+                <span class="icon">🛠️</span>
+                <h1>專家人工篩選介面 <span class="subtitle">Expert Manual Filtering UI</span></h1>
+            </div>
+            
+            <div class="stats-panel">
+                <div class="stat-box">
+                    <span class="stat-label">驗證集 V</span>
+                    <span class="stat-value" id="stat-v">-</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">訓練集 T_small</span>
+                    <span class="stat-value" id="stat-t-small">-</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">訓練集 T_large</span>
+                    <span class="stat-value" id="stat-t-large">-</span>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button id="save-build-btn" class="btn btn-success">
+                    <span class="btn-icon">💾</span> 確認並重建資料集
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <!-- Sidebar: Seed Selector -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <h2>🔑 Query Seeds (共 50 組)</h2>
+                    <p>選擇一個種子影像以編輯其 Ground Truth 相似集合</p>
+                </div>
+                <div class="seed-list" id="seed-list-container">
+                    <!-- Seeds will be loaded here dynamically -->
+                </div>
+            </aside>
+
+            <!-- Main Editor Area -->
+            <section class="editor-area">
+                <!-- Top Row: Seed Detail & Current GT Grid -->
+                <div class="editor-row top-row">
+                    <!-- Left: Query Seed Detail Card -->
+                    <div class="panel query-seed-panel">
+                        <div class="panel-header">
+                            <h3>🔍 當前 Query Seed</h3>
+                        </div>
+                        <div class="panel-body seed-detail-card">
+                            <div class="img-container">
+                                <img id="query-seed-img" src="" alt="Seed Image Preview">
+                            </div>
+                            <div class="seed-metadata">
+                                <p class="seed-name-label">檔名</p>
+                                <p class="seed-name" id="query-seed-name">-</p>
+                                <p class="seed-class-label">原始類別</p>
+                                <span class="badge badge-primary" id="query-seed-class">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Selected Ground Truths -->
+                    <div class="panel selected-gts-panel">
+                        <div class="panel-header">
+                            <h3>✅ 已選擇之 Ground Truths (<span id="gt-count">0</span> 張)</h3>
+                            <p class="panel-subtitle">此幾何相似圖集在評估時將作為此 Query Seed 的正樣本 (Label > 0)</p>
+                        </div>
+                        <div class="panel-body gts-grid" id="gts-grid-container">
+                            <!-- Selected GTs will be loaded here dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bottom Row: Candidate Selection Pool -->
+                <div class="panel candidates-panel">
+                    <div class="panel-header search-header">
+                        <div class="panel-title-area">
+                            <h3>🔎 候選影像池 (Candidate Pool)</h3>
+                            <p class="panel-subtitle">勾選影像將其加入 Ground Truths，取消勾選則移出。未勾選之影像自動作為背景干擾項。</p>
+                        </div>
+                        
+                        <div class="search-controls">
+                            <!-- Algorithm Badge -->
+                            <div class="control-group">
+                                <span class="badge badge-primary" style="font-weight: 600; padding: 6px 12px; border-radius: 6px;">🧠 語義相似度推薦 (Top 50)</span>
+                            </div>
+                            
+                            <!-- Text Search -->
+                            <div class="control-group">
+                                <label for="search-input">過濾候選：</label>
+                                <input type="text" id="search-input" placeholder="過濾檔名關鍵字...">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="panel-body candidates-container">
+                        <div class="candidates-grid" id="candidates-grid-container">
+                            <!-- Candidate images will be loaded here dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Bottom Status Logger -->
+        <footer class="main-footer">
+            <div class="status-indicator">
+                <span class="dot" id="status-dot"></span>
+                <span class="status-text" id="status-text">載入中...</span>
+            </div>
+            <div class="footer-info">
+                <span>專案：Engineering Image Retrieval System</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Image Zoom Lightbox Modal (Side-by-side Comparison) -->
+    <div id="image-modal" class="modal">
+        <span class="modal-close" id="modal-close">&times;</span>
+        
+        <div class="modal-comparison-layout">
+            <!-- Left Pane: Query Seed Reference -->
+            <div class="modal-pane">
+                <div class="modal-pane-header">🔑 當前 Query Seed (對照組)</div>
+                <div class="modal-pane-content" id="modal-seed-container">
+                    <img id="modal-seed-img" src="" alt="Query Seed Reference" draggable="false">
+                </div>
+            </div>
+            
+            <!-- Right Pane: Zoom View -->
+            <div class="modal-pane">
+                <div class="modal-pane-header">🔍 比對影像</div>
+                <div class="modal-pane-content" id="modal-content-container">
+                    <img id="modal-img" src="" alt="Zoomed View" draggable="false">
+                </div>
+            </div>
+        </div>
+        
+        <div class="modal-controls">
+            <button id="zoom-prev-btn" class="modal-btn" title="上一張 (鍵盤 ◀️)">⏮️</button>
+            <button id="zoom-in-btn" class="modal-btn" title="放大">➕</button>
+            <button id="zoom-out-btn" class="modal-btn" title="縮小">➖</button>
+            <button id="zoom-reset-btn" class="modal-btn" title="重設">🔄</button>
+            <button id="zoom-gt-btn" class="modal-btn-rect" title="切換 Ground Truth 狀態">⬜ 設為 GT</button>
+            <button id="zoom-next-btn" class="modal-btn" title="下一張 (鍵盤 ▶️)">⏭️</button>
+        </div>
+        <div class="modal-tip">滾動滾輪以同步縮放，拖曳以同步平移 (支援鍵盤左右方向鍵翻頁)</div>
+    </div>
+
+    <!-- Script loading -->
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

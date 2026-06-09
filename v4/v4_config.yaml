@@ -1,0 +1,46 @@
+data:
+  dataset_root: data
+  raw_zip_path: data/吉輔提供資料.zip
+  raw_pdf_dir: data/raw_pdfs
+  converted_image_dir: data/converted_images
+  preprocessed_image_dir: data/preprocessed_images
+  pdf_dpi: 100
+  pdf_max_workers: 16
+  preprocess_top_n: 5
+  preprocess_max_bbox_ratio: 0.9
+  preprocess_padding: 2
+  preprocess_max_workers: 12
+  remove_gifu_logo: true
+  logo_template_path: data/Gifu_logo.png
+  logo_mask_region:
+  - 0.0
+  - 0.9
+  - 0.2
+  - 1.0
+  dataset_dir: dataset
+  split_ratio: 0.8
+  base_seed: 42
+  cache_npz_path: dataset_cache.npz
+  load_cached_npz: false
+model:
+  backbone: resnet18
+  pretrained: true
+  in_channels: 1
+  proj_dim: 2048
+  pred_hidden: 512
+training:
+  img_size: 512
+  epochs: 200
+  batch_size: 64
+  lr: 2.0e-05
+  weight_decay: 1.0e-05
+  num_workers: 8
+  use_bf16: true
+  grad_clip: 1.0
+  compile_model: true
+experiment:
+  output_dir: outputs_v4
+  exp_name: simsiam_v4
+  save_freq: 10
+  eval_freq: 10
+  log_file: training.log

@@ -18,12 +18,9 @@ wheels/
 chroma_db_store/
 chroma_db/
 results/
-/data/
-/dataset/
-dataset_v2/
-output/
-outputs/
-outputs_v2/
+data*/
+dataset*/
+output*/
 preview_outputs/
 demo/
 docs/
@@ -42,3 +39,4 @@ old/
 /data
 
 /dataset
+models/

@@ -1,10 +1,10 @@
 data:
   dataset_root: data
-  raw_zip_path: data/吉輔提供資料.zip
+  raw_zip_path: data/PDF.zip
   raw_pdf_dir: data/raw_pdfs
   converted_image_dir: data/converted_images
   preprocessed_image_dir: data/preprocessed_images
-  pdf_dpi: 100
+  pdf_dpi: 400
   pdf_max_workers: 16
   preprocess_top_n: 5
   preprocess_max_bbox_ratio: 0.9
@@ -22,6 +22,8 @@ data:
   base_seed: 42
   cache_npz_path: dataset_cache.npz
   load_cached_npz: false
+  norm_mean: 0.0394
+  norm_std: 0.1752
 model:
   backbone: resnet18
   pretrained: true
@@ -38,6 +40,8 @@ training:
   use_bf16: true
   grad_clip: 1.0
   compile_model: true
+  use_augmentation: true
+  collapse_threshold: 0.005
 experiment:
   output_dir: outputs_v4
   exp_name: simsiam_v4

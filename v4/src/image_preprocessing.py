@@ -88,12 +88,31 @@ def analyze_components(bw01: np.ndarray, return_labels: bool = False) -> list[Co
 
 
 def select_large_small(
-    comps: list[Component], top_n: int, remove_largest: bool
+    comps: list[Component],
+    top_n: int,
+    remove_largest: bool = True,
+    max_bbox_ratio: float | None = None,
+    img_shape: tuple[int, int] | None = None
 ) -> tuple[list[Component], list[Component]]:
-    """篩選出大組件與小組件 (可選擇剔除最大的外框)"""
+    """篩選出大組件與小組件 (可選擇剔除大於整張圖一定比例的外接矩形元件，通常為圖框)"""
     ordered = comps.copy()
-    if remove_largest and ordered:
-        ordered = ordered[1:]
+    
+    # 優先使用更精確的 max_bbox_ratio 來過濾圖紙框架
+    if max_bbox_ratio is not None and img_shape is not None and ordered:
+        total_area = img_shape[0] * img_shape[1]
+        filtered_ordered = []
+        for c in ordered:
+            ratio = c.area / total_area
+            if ratio > max_bbox_ratio:
+                # 排除符合框架特徵的超大元件
+                continue
+            filtered_ordered.append(c)
+        ordered = filtered_ordered
+    else:
+        # 退化回原本的 remove_largest 機制 (盲目剔除排序第一的元件)
+        if remove_largest and ordered:
+            ordered = ordered[1:]
+            
     large = ordered[:top_n]
     small = ordered[top_n:]
     return large, small

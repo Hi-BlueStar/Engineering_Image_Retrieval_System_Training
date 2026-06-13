@@ -22,6 +22,8 @@ data:
   base_seed: 42
   cache_npz_path: dataset_cache.npz
   load_cached_npz: false
+  norm_mean: 0.0394
+  norm_std: 0.1752
 model:
   backbone: resnet18
   pretrained: true
@@ -38,6 +40,8 @@ training:
   use_bf16: true
   grad_clip: 1.0
   compile_model: true
+  use_augmentation: true
+  collapse_threshold: 0.005
 experiment:
   output_dir: outputs_v4_test
   exp_name: simsiam_v4

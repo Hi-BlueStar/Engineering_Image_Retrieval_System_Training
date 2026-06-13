@@ -48,10 +48,14 @@ from src.mlops import RunTracker, generate_plotly_report
 logger = get_logger("v4.main")
 
 
+# 取得預設的設定檔絕對路徑，確保不論在何處啟動，皆能精確讀取 v4/v4_config.yaml
+DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent / "v4_config.yaml")
+
+
 def parse_args() -> argparse.Namespace:
     """解析 CLI 入口參數"""
     parser = argparse.ArgumentParser(description="SimSiam v4 工程圖自監督學習訓練入口 CLI")
-    parser.add_argument("--config", type=str, default="v4_config.yaml", help="預設 YAML 設定檔路徑")
+    parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_PATH, help="預設 YAML 設定檔路徑")
     parser.add_argument("--load_cached_npz", action="store_true", help="是否強制直接讀取已壓縮的 .npz 快取檔以進行訓練")
     parser.add_argument("--epochs", type=int, default=None, help="設定訓練 Epochs 數量")
     parser.add_argument("--batch_size", type=int, default=None, help="設定 Batch 大小")
@@ -157,6 +161,7 @@ def main() -> None:
                 input_dir=cfg.data.converted_image_dir,
                 output_dir=cfg.data.preprocessed_image_dir,
                 top_n=cfg.data.preprocess_top_n,
+                max_bbox_ratio=cfg.data.preprocess_max_bbox_ratio,
                 padding=cfg.data.preprocess_padding,
                 remove_logo=cfg.data.remove_gifu_logo,
                 logo_template=cfg.data.logo_template_path,
@@ -194,7 +199,9 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=True,
         device=device,
-        use_bf16=cfg.training.use_bf16
+        use_bf16=cfg.training.use_bf16,
+        mean=cfg.data.norm_mean,
+        std=cfg.data.norm_std
     )
     
     val_loader = GPUPrefetchDataLoader(
@@ -204,7 +211,9 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=True,
         device=device,
-        use_bf16=cfg.training.use_bf16
+        use_bf16=cfg.training.use_bf16,
+        mean=cfg.data.norm_mean,
+        std=cfg.data.norm_std
     )
 
     # 7. 初始化模型拓撲與優化器
@@ -223,7 +232,7 @@ def main() -> None:
     # 幾何敏感隨機資料增強 (載入到 GPU)
     gpu_augmentor = GPUAugmentationModule(
         img_size=cfg.training.img_size,
-        use_augmentation=True
+        use_augmentation=cfg.training.use_augmentation
     ).to(device)
     
     # 損失與監控

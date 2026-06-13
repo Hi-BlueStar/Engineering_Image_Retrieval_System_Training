@@ -57,6 +57,10 @@ class DataConfig:
     # 核心 v4 加速：.npz 快取路徑與是否直接讀取
     cache_npz_path: str = "dataset/dataset_cache.npz"
     load_cached_npz: bool = False  # CLI 若設為 True，直接讀取 cache_npz_path
+    
+    # 影像標準化參數 (預設為吉輔 CAD 白底線條圖的統計值)
+    norm_mean: float = 0.0394
+    norm_std: float = 0.1752
 
 
 @dataclass
@@ -87,6 +91,12 @@ class TrainingConfig:
     
     # 是否啟用 torch.compile 加速資料增強與 forward
     compile_model: bool = True
+
+    # 是否啟用資料增強
+    use_augmentation: bool = True
+
+    # 特徵維度標準差安全斷路器閾值，低於此值即判定發生塌陷並停止訓練
+    collapse_threshold: float = 0.005
 
 
 @dataclass

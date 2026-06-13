@@ -137,9 +137,9 @@ class SimSiamTrainer:
             total_std += batch_std
             n_batches += 1
             
-            # 特徵坍塌安全斷路器：若 Batch 內平均維度標準差小於 0.005，說明已經徹底 collapsed
-            if batch_std < 0.005:
-                err_msg = f"嚴重警報: 檢測到特徵維度坍塌 (Batch Std: {batch_std:.6f} < 0.005)。自動觸發斷路器停止訓練！"
+            # 特徵坍塌安全斷路器：若 Batch 內平均維度標準差小於設定之閾值，說明已經徹底 collapsed
+            if batch_std < self.cfg.training.collapse_threshold:
+                err_msg = f"嚴重警報: 檢測到特徵維度坍塌 (Batch Std: {batch_std:.6f} < {self.cfg.training.collapse_threshold})。自動觸發斷路器停止訓練！"
                 logger.error(err_msg)
                 raise AssertionError(err_msg)
 
@@ -187,6 +187,9 @@ class SimSiamTrainer:
         best_val_loss = float("inf")
         epochs = self.cfg.training.epochs
         
+        # 初始化驗證指標
+        val_loss, val_std = 0.0, 0.0
+        
         logger.info("啟動 SimSiam v4 訓練迴圈... 總 Epochs: %d | Batch Size: %d", epochs, self.cfg.training.batch_size)
         
         # 使用 Rich 進度條美化主控台
@@ -204,11 +207,13 @@ class SimSiamTrainer:
             for epoch in range(1, epochs + 1):
                 start_time = time.perf_counter()
                 
-                # 執行一輪訓練與驗證
+                # 執行一輪訓練
                 train_loss, train_std = self.train_epoch(train_loader)
                 
+                # 依據設定之 eval_freq 定期或在最後一輪執行驗證
                 if len(val_loader) > 0:
-                    val_loss, val_std = self.evaluate(val_loader)
+                    if epoch % self.cfg.experiment.eval_freq == 0 or epoch == epochs:
+                        val_loss, val_std = self.evaluate(val_loader)
                 else:
                     val_loss, val_std = 0.0, 0.0
                     

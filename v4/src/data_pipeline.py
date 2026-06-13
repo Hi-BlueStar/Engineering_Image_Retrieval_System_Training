@@ -231,8 +231,13 @@ def _preprocess_single_image_worker(
         bw01, bg_mode = auto_binarize(src)
         comps = analyze_components(bw01)
         
-        # 篩選大組件 (排除最大圖框，保留 Top-N)
-        large, small = select_large_small(comps, top_n=cfg["top_n"], remove_largest=True)
+        # 篩選大組件 (排除大於比例的圖框，保留 Top-N)
+        large, small = select_large_small(
+            comps,
+            top_n=cfg["top_n"],
+            max_bbox_ratio=cfg.get("max_bbox_ratio", 0.9),
+            img_shape=bw01.shape
+        )
         assignment = assign_small_to_large(large, small)
         merged_masks = merge_small_into_large(large, assignment)
         
@@ -300,6 +305,7 @@ def run_preprocessing_pipeline(
     input_dir: str,
     output_dir: str,
     top_n: int = 5,
+    max_bbox_ratio: float = 0.9,
     padding: int = 2,
     remove_logo: bool = True,
     logo_template: Optional[str] = None,
@@ -319,6 +325,7 @@ def run_preprocessing_pipeline(
     logger.info("開始影像前處理連通域裁切: 共 %d 張圖", len(images))
     cfg = {
         "top_n": top_n,
+        "max_bbox_ratio": max_bbox_ratio,
         "padding": padding,
         "remove_logo": remove_logo,
         "logo_template": logo_template,
@@ -470,7 +477,14 @@ class GPUPrefetcher:
     在 GPU 上計算當前 Batch 時，使用獨立 Stream 與 non_blocking 非同步將下一個 Batch 複製到 GPU，
     並在此處執行型別轉換 (uint8 -> bfloat16/float32) 與背景正規化。
     """
-    def __init__(self, loader: torch.utils.data.DataLoader, device: torch.device, use_bf16: bool = True) -> None:
+    def __init__(
+        self,
+        loader: torch.utils.data.DataLoader,
+        device: torch.device,
+        use_bf16: bool = True,
+        mean: float = 0.0394,
+        std: float = 0.1752
+    ) -> None:
         self.loader = loader
         self.loader_iter = iter(loader)
         self.device = device
@@ -486,8 +500,8 @@ class GPUPrefetcher:
         self.dtype = torch.float32
         
         # 正規化參數 (CAD白底線條：反轉後背景為0，線條為非0)
-        self.mean = torch.tensor([0.0394], device=device, dtype=self.dtype).view(1, 1, 1, 1)
-        self.std = torch.tensor([0.1752], device=device, dtype=self.dtype).view(1, 1, 1, 1)
+        self.mean = torch.tensor([mean], device=device, dtype=self.dtype).view(1, 1, 1, 1)
+        self.std = torch.tensor([std], device=device, dtype=self.dtype).view(1, 1, 1, 1)
         
         self.next_x: Optional[torch.Tensor] = None
         self.next_y: Optional[torch.Tensor] = None
@@ -537,7 +551,18 @@ class GPUPrefetcher:
 
 class GPUPrefetchDataLoader:
     """封裝 GPUPrefetcher 的迭代裝飾器"""
-    def __init__(self, dataset: NPZDataset, batch_size: int, shuffle: bool, num_workers: int, pin_memory: bool, device: torch.device, use_bf16: bool = True) -> None:
+    def __init__(
+        self,
+        dataset: NPZDataset,
+        batch_size: int,
+        shuffle: bool,
+        num_workers: int,
+        pin_memory: bool,
+        device: torch.device,
+        use_bf16: bool = True,
+        mean: float = 0.0394,
+        std: float = 0.1752
+    ) -> None:
         self.loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
@@ -548,12 +573,20 @@ class GPUPrefetchDataLoader:
         )
         self.device = device
         self.use_bf16 = use_bf16
+        self.mean = mean
+        self.std = std
 
     def __len__(self) -> int:
         return len(self.loader)
 
     def __iter__(self) -> GPUPrefetcher:
-        return GPUPrefetcher(self.loader, self.device, use_bf16=self.use_bf16)
+        return GPUPrefetcher(
+            self.loader,
+            self.device,
+            use_bf16=self.use_bf16,
+            mean=self.mean,
+            std=self.std
+        )
 
 
 # ============================================================

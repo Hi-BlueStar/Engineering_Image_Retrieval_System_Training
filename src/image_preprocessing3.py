@@ -123,11 +123,20 @@ def ensure_dir(p: Path) -> None:
 def imwrite_unicode(path: Path, img: np.ndarray) -> bool:
     """
     儲存影像，對含非 ASCII 路徑改用 imencode + tofile 避免 Windows 編碼問題。
+    優化：為 PNG 格式設置較低的壓縮率以加快寫檔速度。
     """
     ensure_dir(path.parent)
     suffix = path.suffix or ".png"
-    ext = suffix if suffix.startswith(".") else f".{suffix}"
-    ok, buf = cv2.imencode(ext, img)
+    ext = suffix.lower() if suffix.startswith(".") else f".{suffix.lower()}"
+    
+    # 設置更快的 PNG 壓縮級別 (1) 以減少寫檔時間
+    params = []
+    if ext == ".png":
+        params = [cv2.IMWRITE_PNG_COMPRESSION, 1]
+    elif ext in (".jpg", ".jpeg"):
+        params = [cv2.IMWRITE_JPEG_QUALITY, 90]
+        
+    ok, buf = cv2.imencode(ext, img, params)
     if not ok:
         return False
     try:
@@ -261,31 +270,36 @@ def auto_binarize(img_bgr: np.ndarray, bin_thresh: int = 0) -> tuple[np.ndarray,
     """
     回傳：(bw01, bg_mode)；bw01 為 0/1，bg_mode ∈ {"white","black"}（原圖底色）
     - 若未指定閾值，使用 Otsu 自適應；同時計算黑/白底版本，選取前景像素數較少的一種。
+    優化：僅執行一次閾值化以減少運算，利用快速的 cv2.countNonZero 與位元右移運算。
     """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     if bin_thresh and 0 < bin_thresh < 255:
         _, bin_white = cv2.threshold(gray, bin_thresh, 255, cv2.THRESH_BINARY)
-        _, bin_black = cv2.threshold(gray, bin_thresh, 255, cv2.THRESH_BINARY_INV)
     else:
         _, bin_white = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        _, bin_black = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-        )
 
-    cnt_w = int(np.count_nonzero(bin_white))
-    cnt_b = int(np.count_nonzero(bin_black))
-    h, w = gray.shape
-    total = h * w
-    candidates = [(cnt_w, "black_bg", bin_white), (cnt_b, "white_bg", bin_black)]
-    candidates = [(c, tag, b) for (c, tag, b) in candidates if 0 < c < total * 0.95]
-    chosen_cnt, chosen_tag, chosen = (
+    # 快速計算非零像素數 (cv2.countNonZero 比 np.count_nonzero 快)
+    cnt_w = cv2.countNonZero(bin_white)
+    total = gray.size
+    cnt_b = total - cnt_w
+    
+    candidates = [(cnt_w, "black_bg"), (cnt_b, "white_bg")]
+    candidates = [c for c in candidates if 0 < c[0] < total * 0.95]
+    chosen_cnt, chosen_tag = (
         min(candidates, key=lambda t: t[0])
         if candidates
-        else (cnt_b, "white_bg", bin_black)
+        else (cnt_b, "white_bg")
     )
 
-    bw = (chosen > 0).astype(np.uint8)  # 0/1
-    bg_mode = "white" if chosen_tag == "white_bg" else "black"
+    if chosen_tag == "white_bg":
+        chosen = cv2.bitwise_not(bin_white)
+        bg_mode = "white"
+    else:
+        chosen = bin_white
+        bg_mode = "black"
+
+    # 位元右移 7 位將 0/255 快速轉換為 0/1 (比 .astype(np.uint8) 快)
+    bw = chosen >> 7
     return bw, bg_mode
 
 
@@ -297,42 +311,27 @@ class Component:
     label: int
     area: int
     bbox: tuple[int, int, int, int]  # x, y, w, h
-    roi_mask: np.ndarray  # 優化：僅儲存裁切後的 ROI 遮罩 (uint8 0/1)，而非全圖大小
+    roi_mask: np.ndarray | None = None  # 優化：延遲載入/選用的 ROI 遮罩，減少無謂記憶體與 CPU 開銷
 
 
-def analyze_components(bw01: np.ndarray) -> list[Component]:
+def analyze_components(bw01: np.ndarray, return_labels: bool = False) -> list[Component] | tuple[list[Component], np.ndarray]:
     """
-    對二值圖(bw01: 前景=1)做連通元件；回傳 Component list 依面積遞減。
-    面積定義更新為：元件的外接矩形面積 (w*h)。
-    使用 8-connectivity 以避免細節被拆分。
-    優化：使用 connectedComponentsWithStats 減少全圖掃描。
-    優化：不再建立與原圖等大的遮罩，僅儲存 ROI mask 以節省記憶體。
+    對二值圖(bw01: 前景=1)做連通元件；回傳 Component 列表（roi_mask 初始化為 None）及可選的 labels 標記圖。
+    優化：支持 return_labels 以確保相容性，且使用列表推導式加快 Component 實例化。
     """
-    # 使用 WithStats 直接取得統計資訊，避免後續重複計算 boundingRect 與 countNonZero
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         bw01, connectivity=8
     )
 
-    comps: list[Component] = []
-    # H, W = bw01.shape
-
-    for lbl in range(1, num_labels):
-        x, y, w, h, area = stats[lbl]
-
-        # 優化：只在 ROI 區域內生成遮罩，而非對全圖做 Boolean Mask
-        roi_labels = labels[y : y + h, x : x + w]
-        roi_mask = (roi_labels == lbl).astype(np.uint8)
-
-        # 將 ROI 遮罩貼回全圖大小 (記憶體交換時間，若記憶體吃緊可考慮只存 ROI)
-        # full_mask = np.zeros((H, W), dtype=np.uint8)
-        # full_mask[y : y + h, x : x + w] = roi_mask
-
-        # 這裡依舊使用 stats 裡的 area (像素面積)，若需維持原邏輯(BBox面積)則自行計算
-        bbox_area = w * h
-
-        comps.append(Component(lbl, bbox_area, (x, y, w, h), roi_mask))
-
+    # 快速列表推導式
+    comps = [
+        Component(lbl, stats[lbl, 2] * stats[lbl, 3], tuple(stats[lbl, :4]), None)
+        for lbl in range(1, num_labels)
+    ]
     comps.sort(key=lambda c: c.area, reverse=True)
+    
+    if return_labels:
+        return comps, labels
     return comps
 
 
@@ -360,9 +359,6 @@ def filled_region_from_component(comp: Component) -> np.ndarray:
     這種方式能避免僅使用 bbox 造成的偽包含。
     優化：僅在 ROI 範圍內進行輪廓查找與繪製。
     """
-    # x, y, w, h = comp.bbox
-    # # 取出 ROI
-    # roi = comp.mask[y : y + h, x : x + w]
     mask255 = (comp.roi_mask * 255).astype(np.uint8)
     contours, _ = cv2.findContours(mask255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -371,20 +367,16 @@ def filled_region_from_component(comp: Component) -> np.ndarray:
     if contours:
         cv2.drawContours(filled_roi, contours, -1, color=1, thickness=-1)
 
-    # 貼回全圖
-    # filled_full = np.zeros_like(comp.mask)
-    # filled_full[y : y + h, x : x + w] = (filled_roi > 0).astype(np.uint8)
-
     return filled_roi
 
 
 def assign_small_to_large(
-    large: list[Component], small: list[Component]
+    large: list[Component], small: list[Component], labels: np.ndarray | None = None
 ) -> dict[int, list[Component]]:
     """
     對每個小元件判斷是否『完全落在』某一個大元件的外輪廓填滿區域內；若是則指派給該大元件。
     回傳：{large_label: [small_components...]}
-    優化：增加 Bounding Box 包含性預先檢查。
+    優化：使用 numpy 矩陣切片與標籤值直接判斷，避免為所有小元件提取 roi_mask，也免除對大區域進行 np.unique 排序，顯著提速。
     """
     if not large or not small:
         return {L.label: [] for L in large}
@@ -394,18 +386,6 @@ def assign_small_to_large(
 
     for s in small:
         sx, sy, sw, sh = s.bbox
-        # 取得小元件在自身 ROI 中的相對座標 (前景像素)
-        s_ys, s_xs = np.where(s.roi_mask > 0)
-        if len(s_ys) == 0:
-            continue
-
-        best_label = None
-        best_cover = -1
-
-        # 小元件在全圖的絕對座標
-        s_abs_y = s_ys + sy
-        s_abs_x = s_xs + sx
-
         for L in large:
             Lx, Ly, Lw, Lh = L.bbox
 
@@ -418,27 +398,25 @@ def assign_small_to_large(
             ):
                 continue
 
-            # 計算小元件相對於大元件 ROI 的座標
-            rel_y = s_abs_y - Ly
-            rel_x = s_abs_x - Lx
-
-            # 安全檢查：確保座標在大元件 ROI 範圍內 (理論上 BBox check 已過濾，但防呆)
-            valid_idx = (rel_y >= 0) & (rel_y < Lh) & (rel_x >= 0) & (rel_x < Lw)
-            if not np.all(valid_idx):
-                continue
+            offset_y = sy - Ly
+            offset_x = sx - Lx
 
             f_roi = filled_map[L.label]
-            # 檢查對應位置是否為填充區域 (1)
-            cover_vals = f_roi[rel_y, rel_x]
+            f_roi_slice = f_roi[offset_y : offset_y + sh, offset_x : offset_x + sw]
 
-            if np.all(cover_vals == 1):
-                cover = int(np.sum(cover_vals))  # 或單純用像素數當權重
-                if cover > best_cover:
-                    best_cover = cover
-                    best_label = L.label
-
-        if best_label is not None:
-            assignment[best_label].append(s)
+            if labels is not None:
+                # 向量化切片判定：檢查在小元件所在的區域內，對應 labels 值為其 label 的像素在 f_roi 中是否全為 1
+                labels_slice = labels[sy : sy + sh, sx : sx + sw]
+                if np.all(f_roi_slice[labels_slice == s.label]):
+                    assignment[L.label].append(s)
+                    break
+            else:
+                # 退化相容判定
+                if s.roi_mask is None:
+                    continue
+                if np.all(s.roi_mask <= f_roi_slice):
+                    assignment[L.label].append(s)
+                    break
 
     return assignment
 
@@ -447,10 +425,11 @@ def assign_small_to_large(
 # 小元件貼回：將指派給大元件的小元件遮罩與大元件遮罩合併
 # ------------------------------------------------------------
 def merge_small_into_large(
-    large: list[Component], assignment: dict[int, list[Component]]
+    large: list[Component], assignment: dict[int, list[Component]], labels: np.ndarray | None = None
 ) -> dict[int, np.ndarray]:
     """
     Union each large component mask with the masks of the small components assigned to it.
+    優化：當 s.roi_mask 為 None 且提供了 labels 時，才延遲載入小元件遮罩，以節省記憶體。
     """
     merged: dict[int, np.ndarray] = {}
     for L in large:
@@ -463,11 +442,18 @@ def merge_small_into_large(
             offset_x = sx - Lx
             offset_y = sy - Ly
 
-            # 取出小元件遮罩，疊加 (聯集)
+            if s.roi_mask is not None:
+                s_mask = s.roi_mask
+            elif labels is not None:
+                s_labels = labels[sy : sy + sh, sx : sx + sw]
+                s_mask = (s_labels == s.label).astype(np.uint8)
+            else:
+                continue
+
             # 使用 np.maximum 避免覆蓋掉原本存在的 mask
             roi_slice = merged_mask[offset_y : offset_y + sh, offset_x : offset_x + sw]
             merged_mask[offset_y : offset_y + sh, offset_x : offset_x + sw] = (
-                np.maximum(roi_slice, s.roi_mask)
+                np.maximum(roi_slice, s_mask)
             )
 
         merged[L.label] = merged_mask
@@ -516,7 +502,7 @@ def random_arrange_components(
     Randomly place each merged large component (with its small components) on the canvas without overlap.
     - 以大元件 bbox 當作「擺放盒子」；內部畫素取自貼回後的 ROI。
     - 嘗試 max_attempts 次找不重疊位置，失敗則回退至原始位置（若仍重疊則略過）。
-    優化：直接使用已存在的 ROI mask 與 src 進行操作。
+    優化：預先轉換 mask 為 bool 類型以加快 np.copyto 處理。
     """
     rng = rng or random.Random()
     H, W, _ = src.shape
@@ -527,16 +513,15 @@ def random_arrange_components(
     for L in large:
         x, y, w, h = L.bbox
         roi_mask = merged_masks[L.label]
+        # 預先轉換為 bool 以免在 np.copyto 中重覆運算，並增加維度
+        roi_mask_bool = roi_mask.astype(bool)[:, :, None]
         roi_src = src[y : y + h, x : x + w]
         comps_data.append(
-            {"bbox": (x, y, w, h), "roi_mask": roi_mask, "roi_src": roi_src}
+            {"bbox": (x, y, w, h), "roi_mask": roi_mask_bool, "roi_src": roi_src}
         )
 
     rng.shuffle(comps_data)
     placed: list[tuple[int, int, int, int]] = []
-
-    # ... (後續碰撞檢測與擺放邏輯與原程式碼相同，不需更動) ...
-    # 僅需確保取用 roi_mask 時變數名稱一致即可
 
     for comp in comps_data:
         w = comp["bbox"][2]
@@ -547,12 +532,11 @@ def random_arrange_components(
             rx = rng.randint(0, max(0, W - w))
             ry = rng.randint(0, max(0, H - h))
             candidate = (rx, ry, w, h)
-            # 使用原有的 _boxes_overlap
             if not any(_boxes_overlap(candidate, p, padding) for p in placed):
                 chosen = candidate
                 break
 
-        # Fallback logic (同原程式)
+        # Fallback logic
         if chosen is None:
             candidate = comp["bbox"]
             if (
@@ -566,15 +550,15 @@ def random_arrange_components(
 
         rx, ry, w, h = chosen
         dst = canvas[ry : ry + h, rx : rx + w]
-        mask_bool = comp["roi_mask"].astype(bool)
-        dst[mask_bool] = comp["roi_src"][mask_bool]
+        # 使用快速的 C-level np.copyto
+        np.copyto(dst, comp["roi_src"], where=comp["roi_mask"])
         placed.append(chosen)
 
     return canvas
 
 
 # ------------------------------------------------------------
-# 主要流程（已改為：僅處理 TopK 大元件）
+# 主要流程
 # ------------------------------------------------------------
 @timer
 @show_memory("主要流程")
@@ -589,31 +573,8 @@ def run_pipeline(
     random_count: int = 10,
 ) -> dict[str, object]:
     """
-    主要流程（無 CLI，直接呼叫此函式）
-    - Step 1: 連通元件分析、排序，劃分大/小元件（TopK，大元件可選擇移除最大一個）
-    - Step 2: 以「外輪廓填滿遮罩」判斷小元件是否完整落在某大元件內並指派
-    - Step 3: 將指派的小元件貼回大元件，輸出：
-        * 原圖
-        * 大元件貼回後、保持原位置的全圖
-        * 大元件貼回後隨機排列且不重疊的全圖
-        * 每個「處理後大元件」的獨立輸出圖（裁切為外框+padding，存放於 large_components/）
-
-    Args:
-        input_path: 輸入影像路徑
-        output_dir: 輸出目錄
-        top_n: 要保留的大元件數
-        remove_largest: 是否先移除面積最大元件再取 TopK
-        seed: 隨機排列的亂數種子（固定可重現）
-        padding: 隨機排列時盒子之間預留的間距（像素），同時也作為大元件裁切輸出的外框 padding
-        max_attempts: 為每個元件嘗試隨機放置的最大迭代次數
-        random_count: 要產生的「隨機排列圖」張數（預設 10 張）
-
-    Returns:
-        Dict[str, object]: 各輸出檔案的路徑
-            - "original": Path
-            - "merged": Path
-            - "random": List[Path]（多張隨機排列圖）
-            - "large_dir": Path（存放單獨大元件）
+    主要流程
+    優化：完全重構為極速向量化版本。
     """
     input_path = Path(input_path)
     if not input_path.is_file():
@@ -623,20 +584,60 @@ def run_pipeline(
     ensure_dir(output_root)
     rng = random.Random(seed)
 
-    # 讀檔 + 自動二值化（支援白/黑底）
     src = _imread_unicode(input_path)
     if src is None:
         raise ValueError(f"cv2.imread/imdecode 讀取失敗：{input_path.resolve()}")
     bw01, bg_mode = auto_binarize(src)  # 前景=1，bg_mode={"white","black"}
 
-    # 連通元件、排序、定義大/小
-    comps = analyze_components(bw01)
-    large, small = select_large_small(comps, top_n, remove_largest)
+    # 1. 向量化獲取連通元件與標記
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        bw01, connectivity=8
+    )
 
-    # 以填滿外輪廓的遮罩決定小元件是否完全包含於大元件，並完成指派
-    assignment = assign_small_to_large(large, small)  # 採用填充式外輪廓
-    # 合併：將小元件貼回對應的大元件遮罩，得到「處理後大元件」
-    merged_masks = merge_small_into_large(large, assignment)
+    # 2. 向量化排序 (依 BBox 面積排序)
+    areas = stats[1:, cv2.CC_STAT_WIDTH] * stats[1:, cv2.CC_STAT_HEIGHT]
+    sorted_idx = np.argsort(areas)[::-1] + 1  # 1-based labels
+
+    if remove_largest and len(sorted_idx) > 0:
+        sorted_idx = sorted_idx[1:]
+
+    large_labels = sorted_idx[:top_n]
+    small_labels = sorted_idx[top_n:]
+
+    # 3. 僅為大元件實例化 Component
+    large = []
+    for lbl in large_labels:
+        x, y, w, h, _ = stats[lbl]
+        large.append(Component(lbl, w * h, (x, y, w, h), None))
+
+    # 4. 生成大元件遮罩
+    for L in large:
+        Lx, Ly, Lw, Lh = L.bbox
+        roi_labels = labels[Ly : Ly + Lh, Lx : Lx + Lw]
+        L.roi_mask = (roi_labels == L.label).astype(np.uint8)
+
+    # 5. 向量化預篩選小元件：只有當它的 bbox 完全落在某個大元件的 bbox 內時才保留
+    s_stats = stats[small_labels]
+    s_x, s_y, s_w, s_h = s_stats[:, 0], s_stats[:, 1], s_stats[:, 2], s_stats[:, 3]
+    contained_mask = np.zeros(len(small_labels), dtype=bool)
+    for L in large:
+        Lx, Ly, Lw, Lh = L.bbox
+        mask = (s_x >= Lx) & (s_y >= Ly) & ((s_x + s_w) <= (Lx + Lw)) & ((s_y + s_h) <= (Ly + Lh))
+        contained_mask |= mask
+
+    filtered_small_labels = small_labels[contained_mask]
+    
+    # 僅為通過篩選的小元件實例化 Component (不預提取 roi_mask)
+    filtered_small = []
+    for lbl in filtered_small_labels:
+        x, y, w, h, _ = stats[lbl]
+        filtered_small.append(Component(lbl, w * h, (x, y, w, h), None))
+
+    # 6. 極速判定包含關係
+    assignment = assign_small_to_large(large, filtered_small, labels)
+    
+    # 7. 合併：僅在需要時提取小元件遮罩
+    merged_masks = merge_small_into_large(large, assignment, labels)
 
     # 生成「大元件貼回後、保持原位置」的全圖
     merged_img = compose_merged_image(src, large, merged_masks, bg_mode)
@@ -653,7 +654,8 @@ def run_pipeline(
             max_attempts=max_attempts,
         )
         random_imgs.append((random_img, idx_random))
-    # 逐一輸出「處理後大元件」影像（與原圖同尺寸，便於檢視）
+
+    # 逐一輸出「處理後大元件」影像
     saved_large_paths = save_large_components_images(
         src,
         large,
@@ -696,23 +698,20 @@ def run_pipeline(
 
 
 # ------------------------------------------------------------
-# 範例（供引用端參考）
+# 範例
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    # 注意：本模組不提供 CLI；以下段落僅作為「在 IDE 中直接執行」的測試入口。
-
-    # --- 範例 1：完整輸出模式 ---
-    demo_path = Path("data/engineering_images_100dpi/固定夾塊/175H10-DSV-000-10200.png")
+    demo_path = Path("data/engineering_images_100dpi/175H10-DSV-000-10200.png")
     if not demo_path.is_file():
         print(f"[WARN] 範例檔案不存在：{demo_path.resolve()}")
     else:
         run_pipeline(
             str(demo_path),
-            output_dir="results/random_arrange_demo",
+            output_dir="results_test/random_arrange_demo",
             top_n=5,
             remove_largest=True,
             seed=420,
-            padding=4,  # 加大間距，避免隨機排列時貼太近
-            max_attempts=800,  # 增加嘗試次數，提高放置成功率
-            random_count=10,  # 產生 10 張隨機排列結果
+            padding=4,
+            max_attempts=800,
+            random_count=10,
         )

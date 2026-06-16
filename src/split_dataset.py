@@ -23,10 +23,11 @@ from rich.table import Table
 
 
 class RichDatasetSplitter:
-    def __init__(self, source_root: str, output_root: str, split_ratio: float = 0.8):
+    def __init__(self, source_root: str, output_root: str, split_ratio: float = 0.8, dataset_mode: str = "both"):
         self.source_root = Path(source_root)
         self.output_root = Path(output_root)
         self.split_ratio = split_ratio
+        self.dataset_mode = dataset_mode  # "Instance_Dataset", "Component_Dataset", or "both"
 
         # 初始化 Rich Console
         self.console = Console()
@@ -52,17 +53,33 @@ class RichDatasetSplitter:
             count = 0
             total_files = 0
 
-            # 遍歷第一層 (類別層級)
-            for class_dir in self.source_root.iterdir():
-                if class_dir.is_dir():
-                    class_name = class_dir.name
-                    # 遍歷第二層 (工件層級)
-                    for instance_dir in class_dir.iterdir():
-                        if instance_dir.is_dir():
-                            self.structure_map[class_name].append(instance_dir)
-                            count += 1
-                            # 預先計算該 Instance 下的所有 PNG 數量 (為了進度條準確度)
-                            total_files += self._count_png_recursive(instance_dir)
+            # 偵測目錄結構是否為 flat (每個子目錄即為工件實例，包含 png 與 large_components/)
+            is_flat = False
+            for child in self.source_root.iterdir():
+                if child.is_dir():
+                    if any(child.glob("*.png")):
+                        is_flat = True
+                        break
+
+            if is_flat:
+                # Flat 結構：每個子目錄代表一個工件實例，其類別從名稱前綴解析
+                for instance_dir in self.source_root.iterdir():
+                    if instance_dir.is_dir():
+                        parts = instance_dir.name.split('-')
+                        class_name = parts[0] if len(parts) > 0 else "default_class"
+                        self.structure_map[class_name].append(instance_dir)
+                        count += 1
+                        total_files += self._count_png_for_mode(instance_dir)
+            else:
+                # Nested 結構：子目錄為類別資料夾，孫目錄為工件實例資料夾
+                for class_dir in self.source_root.iterdir():
+                    if class_dir.is_dir():
+                        class_name = class_dir.name
+                        for instance_dir in class_dir.iterdir():
+                            if instance_dir.is_dir():
+                                self.structure_map[class_name].append(instance_dir)
+                                count += 1
+                                total_files += self._count_png_for_mode(instance_dir)
 
             time.sleep(0.5) # 稍微暫停讓使用者看到完成狀態
 
@@ -70,12 +87,22 @@ class RichDatasetSplitter:
         self.console.print(f"   預計處理圖片總數: [bold yellow]{total_files}[/]\n")
         return total_files
 
-    def _count_png_recursive(self, path: Path) -> int:
-        """輔助函式：計算路徑下所有 PNG 數量 (包含子目錄)"""
+    def _count_png_for_mode(self, instance_dir: Path) -> int:
+        """輔助函式：根據所選資料集模式計算 PNG 數量"""
         count = 0
-        for p in path.rglob("*.png"):
-            if p.is_file():
-                count += 1
+        # A. Instance Level
+        if self.dataset_mode in ("Instance_Dataset", "both"):
+            for p in instance_dir.glob("*.png"):
+                if p.is_file():
+                    count += 1
+
+        # B. Component Level
+        if self.dataset_mode in ("Component_Dataset", "both"):
+            large_comp_dir = instance_dir / "large_components"
+            if large_comp_dir.exists() and large_comp_dir.is_dir():
+                for p in large_comp_dir.glob("*.png"):
+                    if p.is_file():
+                        count += 1
         return count
 
     def _safe_copy(self, src_file: Path, dst_dir: Path, dst_filename: str = None) -> bool:
@@ -108,36 +135,40 @@ class RichDatasetSplitter:
         inst_out_dir = seed_dir / "Instance_Dataset" / dataset_type
         comp_out_dir = seed_dir / "Component_Dataset" / dataset_type
 
-        inst_out_dir.mkdir(parents=True, exist_ok=True)
-        comp_out_dir.mkdir(parents=True, exist_ok=True)
+        if self.dataset_mode in ("Instance_Dataset", "both"):
+            inst_out_dir.mkdir(parents=True, exist_ok=True)
+        if self.dataset_mode in ("Component_Dataset", "both"):
+            comp_out_dir.mkdir(parents=True, exist_ok=True)
 
         count_inst = 0
         count_comp = 0
 
         for instance_path in instance_list:
             # A. Instance Level
-            for item in instance_path.iterdir():
-                if item.is_file() and item.suffix.lower() == '.png':
-                    self._safe_copy(item, inst_out_dir)
-                    count_inst += 1
-                    progress.advance(task_id) # 更新進度條
+            if self.dataset_mode in ("Instance_Dataset", "both"):
+                for item in instance_path.iterdir():
+                    if item.is_file() and item.suffix.lower() == '.png':
+                        self._safe_copy(item, inst_out_dir)
+                        count_inst += 1
+                        progress.advance(task_id) # 更新進度條
 
             # B. Component Level
-            large_comp_dir = instance_path / "large_components"
-            if large_comp_dir.exists() and large_comp_dir.is_dir():
+            if self.dataset_mode in ("Component_Dataset", "both"):
+                large_comp_dir = instance_path / "large_components"
+                if large_comp_dir.exists() and large_comp_dir.is_dir():
 
-                # 取得 ID (即 instance_path 的資料夾名稱，例如 "SY3CHH03-10060102000")
-                instance_id = instance_path.name
+                    # 取得 ID (即 instance_path 的資料夾名稱，例如 "SY3CHH03-10060102000")
+                    instance_id = instance_path.name
 
-                for item in large_comp_dir.iterdir():
-                    if item.is_file() and item.suffix.lower() == '.png':
-                        # 組合新檔名: ID + "_" + 原檔名
-                        new_filename = f"{instance_id}_{item.name}"
+                    for item in large_comp_dir.iterdir():
+                        if item.is_file() and item.suffix.lower() == '.png':
+                            # 組合新檔名: ID + "_" + 原檔名
+                            new_filename = f"{instance_id}_{item.name}"
 
-                        # 傳入新檔名
-                        self._safe_copy(item, comp_out_dir, dst_filename=new_filename)
-                        count_comp += 1
-                        progress.advance(task_id) # 更新進度條
+                            # 傳入新檔名
+                            self._safe_copy(item, comp_out_dir, dst_filename=new_filename)
+                            count_comp += 1
+                            progress.advance(task_id) # 更新進度條
 
         return count_inst, count_comp
 
@@ -172,6 +203,8 @@ class RichDatasetSplitter:
                     # 設定隨機
                     random.seed(seed)
                     current_output_dir = self.output_root / f"{run_name}_Seed_{seed}"
+                    if current_output_dir.exists():
+                        shutil.rmtree(current_output_dir)
 
                     # 建立該 Run 的檔案處理進度條 (Total = 總圖片數 * 2 因為 copy 兩次? 不，這裡是拆分，總數即為資料集總數)
                     # 注意：分層抽樣後，train+val 的總圖數應該等於 total_files_in_dataset
@@ -186,6 +219,11 @@ class RichDatasetSplitter:
                         random.shuffle(instances_shuffled)
 
                         split_idx = int(len(instances_shuffled) * self.split_ratio)
+                        # 保底機制：若類別內只有 1 個實例，以 split_ratio 的機率分配至 train，否則至 val
+                        if split_idx == 0 and len(instances_shuffled) > 0:
+                            if random.random() < self.split_ratio:
+                                split_idx = 1
+
                         train_instances = instances_shuffled[:split_idx]
                         val_instances = instances_shuffled[split_idx:]
 
@@ -256,13 +294,29 @@ class RichDatasetSplitter:
 # 主程式
 # ==========================================
 if __name__ == "__main__":
-    # 假定參數
-    SOURCE_DIR = "results/batch/engineering_images_100dpi"  # 您的來源路徑
-    OUTPUT_DIR = "dataset"  # 輸出路徑
-    BASE_SEED = 42  # 初始種子碼
-    REPEAT_TIMES = 20  # 重複執行次數 (N)
-    TRAIN_RATIO = 0.8  # 訓練集比例
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Split dataset into train/val subsets with selectable mode.")
+    parser.add_argument("--source_dir", type=str, default="results/batch/engineering_images_100dpi", help="Source dataset root directory")
+    parser.add_argument("--output_dir", type=str, default="dataset", help="Output directory")
+    parser.add_argument("--base_seed", type=int, default=42, help="Initial random seed")
+    parser.add_argument("--repeat_times", type=int, default=1, help="Number of repetitions")
+    parser.add_argument("--train_ratio", type=float, default=0.8, help="Ratio of training set")
+    parser.add_argument(
+        "--dataset_mode", 
+        type=str, 
+        default="Component_Dataset", 
+        choices=["Instance_Dataset", "Component_Dataset", "both"],
+        help="Dataset mode to split: Instance_Dataset, Component_Dataset, or both"
+    )
+
+    args = parser.parse_args()
 
     # 執行
-    splitter = RichDatasetSplitter(SOURCE_DIR, OUTPUT_DIR, TRAIN_RATIO)
-    splitter.run_repeated_splits(BASE_SEED, REPEAT_TIMES)
+    splitter = RichDatasetSplitter(
+        source_root=args.source_dir,
+        output_root=args.output_dir,
+        split_ratio=args.train_ratio,
+        dataset_mode=args.dataset_mode
+    )
+    splitter.run_repeated_splits(args.base_seed, args.repeat_times)

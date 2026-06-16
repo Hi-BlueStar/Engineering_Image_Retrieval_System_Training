@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import threading
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,12 +218,7 @@ def _convert_one_pdf(
     tasks: list[PageTask],
     output_dir: Path,
     dpi: int,
-    progress: Progress,
-    progress_task_id: TaskID,
-    rows_out: list[tuple[str, str, str]],
-    rows_lock: threading.Lock,
-    console: Console,
-) -> None:
+) -> tuple[list[tuple[str, str, str]], int, int, str | None]:
     """處理單一 PDF（依內含之 PageTask 逐頁轉檔）。
 
     Args:
@@ -230,34 +226,21 @@ def _convert_one_pdf(
         tasks: 該 PDF 對應的頁面任務列表（已決定 split 與目的路徑）。
         output_dir: 輸出根目錄。
         dpi: 轉檔 DPI（透過縮放矩陣控制）。
-        progress: Rich 的 Progress 物件，供更新進度條。
-        progress_task_id: 進度條任務 ID。
-        rows_out: 供成功頁面寫入 manifest 之共享列表（執行緒安全地 append）。
-        rows_lock: 保護 `rows_out` 的鎖。
-        console: Rich Console，用於印出狀態訊息。
 
-    Raises:
-        Exception: 若內部轉檔時發生未攔截的例外，會由上層處理。
+    Returns:
+        tuple: (converted_rows, success_pages, failed_pages, first_error_msg)
     """
 
     scale = dpi / 72.0
     success_pages = 0
     failed_pages = 0
     first_error_msg = None
+    converted_rows = []
 
     try:
         doc = fitz.open(pdf_path)
         try:
             for t in tasks:
-                # 動態更新目前檔案/頁面至進度條描述
-                progress.update(
-                    progress_task_id,
-                    description=(
-                        f"[cyan]處理[/cyan] [yellow]{pdf_path.name}"
-                        f"[/yellow] (page {t.page_index + 1})"
-                    ),
-                )
-
                 try:
                     page = doc.load_page(t.page_index)
                     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
@@ -269,49 +252,25 @@ def _convert_one_pdf(
                     # 寫入 manifest 行：使用相對路徑與標籤、split
                     image_rel_posix = t.dest_rel_path.as_posix()
 
-                    # source_pdf 欄位儲存相對於 root_dir 的相對路徑較佳，但此處
-                    # 不保留 root_dir，故以檔名或相對字串表示；由於 spec 未強制，
-                    # 以原始路徑字串表達。
                     row = (
                         str(t.source_pdf),  # source_pdf
                         t.class_label,  # class_label
                         image_rel_posix,  # image_path (相對於 output_dir)
                     )
-                    with rows_lock:
-                        rows_out.append(row)
+                    converted_rows.append(row)
                     success_pages += 1
                 except Exception as page_exc:  # 單頁失敗不影響其他頁
                     failed_pages += 1
                     if first_error_msg is None:
                         first_error_msg = f"{type(page_exc).__name__}: {page_exc}"
-                finally:
-                    progress.advance(progress_task_id, 1)
         finally:
             doc.close()
     except Exception as open_exc:
         # 若整份 PDF 開啟即失敗，將全部頁面視為失敗
         failed_pages = len(tasks)
         first_error_msg = f"開啟 PDF 失敗: {type(open_exc).__name__}: {open_exc}"
-        # 仍把進度推進
-        progress.advance(progress_task_id, failed_pages)
 
-    # 完成後印出結果摘要
-    if failed_pages == 0:
-        rprint(
-            f"[green]✓[/green] 處理完成: [cyan]{pdf_path.name}[/cyan] "
-            f"([bold]{success_pages}[/bold] 張影像)"
-        )
-    elif success_pages == 0:
-        rprint(
-            f"[red]✗[/red] 處理失敗: [yellow]{pdf_path.name}[/yellow] - "
-            f"{first_error_msg or '未知錯誤'}"
-        )
-    else:
-        rprint(
-            f"[yellow]![/yellow] 部分成功: [cyan]{pdf_path.name}[/cyan] - "
-            f"成功 {success_pages} / 失敗 {failed_pages}; "
-            f"第一個錯誤: {first_error_msg or '未知'}"
-        )
+    return converted_rows, success_pages, failed_pages, first_error_msg
 
 
 def run(
@@ -344,6 +303,22 @@ def run(
     root_dir = Path(root_dir).resolve()
     output_dir = Path(output_dir).resolve()
 
+    # 自動處理 ZIP 壓縮檔的解壓
+    if root_dir.is_file() and root_dir.suffix.lower() == ".zip":
+        import zipfile
+        extract_dir = root_dir.parent / root_dir.stem
+        if not extract_dir.exists():
+            console.print(f"[cyan]偵測到 ZIP 壓縮檔，正在自動解壓至: {extract_dir}...[/cyan]")
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(root_dir, "r") as z:
+                # 建立所有父目錄，防範並行解壓時競爭
+                for member in z.namelist():
+                    target = extract_dir / member
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                z.extractall(extract_dir)
+            console.print("[green]解壓完成！[/green]")
+        root_dir = extract_dir
+
     _validate_inputs(root_dir, output_dir, dpi)
 
     # 掃描 PDF 與類別
@@ -373,11 +348,10 @@ def run(
         f"根目錄: [cyan]{root_dir}[/cyan]\n"
         f"輸出目錄: [green]{output_dir}[/green]\n"
         f"DPI: [yellow]{dpi}[/yellow]\n"
-        f"工作執行緒: [yellow]{max_workers}[/yellow]"
+        f"工作行程數: [yellow]{max_workers}[/yellow]"
     )
 
     rows_out: list[tuple[str, str, str]] = []
-    rows_lock = threading.Lock()
 
     # Rich 進度條設定
     progress = Progress(
@@ -392,11 +366,11 @@ def run(
     )
 
     with progress:
-        task_id = progress.add_task("初始化任務…", total=total_pages)
+        task_id = progress.add_task("轉換 PDF 中…", total=total_pages)
 
         # 以「每個 PDF 檔」為單位分派工作，內部處理所有頁面
-        futures = []
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {}
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
             for pdf_path, page_tasks in tasks_by_pdf.items():
                 fut = ex.submit(
                     _convert_one_pdf,
@@ -404,19 +378,35 @@ def run(
                     page_tasks,
                     output_dir,
                     dpi,
-                    progress,
-                    task_id,
-                    rows_out,
-                    rows_lock,
-                    console,
                 )
-                futures.append(fut)
+                futures[fut] = (pdf_path, len(page_tasks))
 
             # 逐一等待完成，以捕捉可能的未處理例外（避免靜默失敗）
             for fut in as_completed(futures):
+                pdf_path, num_pages = futures[fut]
                 try:
-                    fut.result()
+                    converted_rows, success_pages, failed_pages, first_error_msg = fut.result()
+                    rows_out.extend(converted_rows)
+                    progress.advance(task_id, num_pages)
+                    
+                    if failed_pages == 0:
+                        progress.console.print(
+                            f"[green]✓[/green] 處理完成: [cyan]{pdf_path.name}[/cyan] "
+                            f"([bold]{success_pages}[/bold] 張影像)"
+                        )
+                    elif success_pages == 0:
+                        progress.console.print(
+                            f"[red]✗[/red] 處理失敗: [yellow]{pdf_path.name}[/yellow] - "
+                            f"{first_error_msg or '未知錯誤'}"
+                        )
+                    else:
+                        progress.console.print(
+                            f"[yellow]![/yellow] 部分成功: [cyan]{pdf_path.name}[/cyan] - "
+                            f"成功 {success_pages} / 失敗 {failed_pages}; "
+                            f"第一個錯誤: {first_error_msg or '未知'}"
+                        )
                 except Exception as exc:  # 任何未預期錯誤
+                    progress.advance(task_id, num_pages)
                     rprint(
                         f"[red]✗[/red] 轉檔工作執行時發生未預期例外："
                         f"[yellow]{type(exc).__name__}: {exc}[/yellow]"
@@ -445,60 +435,62 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description=(
-            "PDF 轉影像工具（多執行緒 + Rich 進度）\n"
+            "PDF 轉影像工具（多行程並行 + Rich 進度）\n"
             "- 根目錄需包含類別資料夾，PDF 父資料夾即為該檔的 class label。\n"
             "- 多頁 PDF 每頁視為獨立影像，輸出時保留原資料夾結構。\n"
         )
     )
     parser.add_argument(
-        "--root_dir", type=str, required=True, help="資料根目錄（含類別資料夾與 PDF）"
+        "positional_root_dir",
+        type=str,
+        nargs="?",
+        default=None,
+        help="資料根目錄（位置參數，亦可為 ZIP 檔路徑）",
     )
     parser.add_argument(
-        "--output_dir", type=str, required=True, help="輸出資料集根目錄"
+        "--root_dir",
+        type=str,
+        default=None,
+        help="資料根目錄（含類別資料夾與 PDF）",
     )
-    parser.add_argument("--dpi", type=int, default=300, help="輸出影像 DPI（預設 300）")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="輸出資料集根目錄",
+    )
+    parser.add_argument("--dpi", type=int, default=100, help="輸出影像 DPI（預設 100）")
     parser.add_argument(
         "--max_workers",
         type=int,
         default=None,
-        help="最大執行緒數（預設為 CPU 合理值）",
+        help="最大工作行程數（預設為 CPU 核心數）",
     )
     return parser
 
 
 if __name__ == "__main__":
-    # # CLI 版本：從命令列參數執行
-    # parser = _build_arg_parser()
-    # args = parser.parse_args()
+    # CLI 版本與防呆 Fallback
+    parser = _build_arg_parser()
+    args = parser.parse_args()
 
-    # try:
-    #     run(
-    #         root_dir=args.root_dir,
-    #         output_dir=args.output_dir,
-    #         dpi=args.dpi,
-    #         max_workers=args.max_workers,
-    #     )
-    # except Exception as e:
-    #     rprint(f"[red]✗[/red] 程式執行失敗：[yellow]{type(e).__name__}: {e}[/yellow]")
-    #     sys.exit(1)
+    # 決定使用的 root_dir 與 output_dir (支援位置參數、具名參數及測試 Fallback)
+    root_dir = args.root_dir or args.positional_root_dir
+    output_dir = args.output_dir
 
-    # --------------------------------------------------------------
-    # 參數寫死版本（供 IDE 快速測試，請依需求修改後取消註解）：
-    # --------------------------------------------------------------
-    from rich import print as rprint
+    if not root_dir:
+        root_dir = r"./data/PDF"
+    if not output_dir:
+        output_dir = r"./data/engineering_images_100dpi"
 
     try:
         df_manifest = run(
-            root_dir=r"./data/吉輔提供資料",  # 根目錄（含類別資料夾與 PDF）
-            output_dir=r"./data/engineering_images_100dpi",  # 輸出根目錄
-            dpi=100,  # 影像解析度（DPI）
-            max_workers=16,  # 預設為 CPU 合理值
+            root_dir=root_dir,
+            output_dir=output_dir,
+            dpi=args.dpi,
+            max_workers=args.max_workers,
         )
         rprint(df_manifest.head())
     except Exception as e:
-        rprint(f"[red]✗[/red] 測試執行失敗：[yellow]{type(e).__name__}: {e}[/yellow]")
-
-"""
-uv run python src/pdf_to_image2.py --root_dir ./data/吉輔提供資料 --output_dir ./data/engineering_images_100dpi --dpi 100 --max_workers 14
-
-"""  # noqa: E501
+        rprint(f"[red]✗[/red] 程式執行失敗：[yellow]{type(e).__name__}: {e}[/yellow]")
+        sys.exit(1)

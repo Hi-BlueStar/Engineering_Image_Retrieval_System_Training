@@ -1,6 +1,14 @@
 # batch_runner for image_preprocessing2
 from __future__ import annotations
 
+import os
+# 強制所有底層數學與平行計算庫在單個子行程中以單執行緒運行，避免執行緒爆炸與 CPU 爭搶死鎖
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import contextlib
 
 # import ctypes
@@ -94,15 +102,14 @@ def _fmt_bytes(n: int | None) -> str:
 # 硬體感知裝飾器 (Resource Gatekeeper)
 # ================================
 def resource_guard(
-    ram_threshold: float = 90.0,
-    gpu_mem_threshold: float = 90.0,
+    ram_threshold: float = 95.0,
     check_interval: float = 1.0,
-    console: Console | None = None,
 ):
     """
     硬體資源守門員：
-    在執行函式前檢查系統記憶體 (RAM) 與 GPU 顯存。
+    在執行函式前檢查系統記憶體 (RAM)。
     若超過設定閾值，則暫停執行並等待資源釋放，避免 OOM 崩潰。
+    此處理為 CPU 密集型，已移除無意義的 GPU 顯存檢查，避免受其他背景訓練程序干擾。
     """
 
     def decorator(func):
@@ -110,40 +117,19 @@ def resource_guard(
         def wrapper(*args, **kwargs):
             # 1. 檢查系統記憶體 (RAM)
             if psutil:
+                warned = False
                 while True:
                     mem = psutil.virtual_memory()
                     if mem.percent < ram_threshold:
                         break
-                    # 資源吃緊，進入等待
-                    if console:
-                        # 顯示一個瞬態訊息 (不會保留在 log)
-                        console.print(
-                            f"[yellow dim]系統 RAM 負載過高 ({mem.percent}%)，\
-                                執行緒暫停等待中...[/]",
-                            end="\r",
+                    # 資源吃緊，進入等待，輸出實體日誌避免無聲卡死
+                    if not warned:
+                        sys.stderr.write(
+                            f"\n[WARN] 行程 {os.getpid()} 偵測到系統 RAM 負載過高 ({mem.percent}%)，子程序暫停等待中...\n"
                         )
+                        sys.stderr.flush()
+                        warned = True
                     time.sleep(check_interval)
-
-            # 2. 檢查 GPU 顯存 (若有的話)
-            if _NVML_OK:
-                try:
-                    # 簡單策略：檢查第一張 GPU 或所有 GPU 平均
-                    # 這裡示範檢查 index 0，若多卡可再擴充
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                    while True:
-                        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                        used_percent = (info.used / info.total) * 100
-                        if used_percent < gpu_mem_threshold:
-                            break
-                        if console:
-                            console.print(
-                                f"[yellow dim]GPU 顯存負載過高 ({used_percent:.1f}%)，\
-                                    執行緒暫停等待中...[/]",
-                                end="\r",
-                            )
-                        time.sleep(check_interval)
-                except Exception:
-                    pass  # 獲取失敗則略過檢查
 
             # 資源充足，放行
             return func(*args, **kwargs)
@@ -337,6 +323,9 @@ def _process_image_task(args: tuple[Path, BatchConfig]) -> FileStat:
     """
     子程序執行的單一任務單元。
     """
+    import cv2
+    cv2.setNumThreads(0) # 停用 OpenCV 內部多執行緒以避免與 mp.Pool 衝突
+    
     img_path, cfg = args
 
     # 在子程序中重新計算輸出路徑
@@ -361,7 +350,7 @@ def _process_image_task(args: tuple[Path, BatchConfig]) -> FileStat:
     # 準備 Resource Guard
     # 注意：子程序無法直接使用主程序的 console，這裡傳入 None 或簡單 print
     # 若需嚴格監控，可在此處實例化新的 Console 或僅依賴 Log
-    @resource_guard(ram_threshold=90.0, gpu_mem_threshold=90.0, console=None)
+    @resource_guard(ram_threshold=95.0)
     def _protected_run(target_path: str, target_out_dir: str):
         return run_pipeline(
             input_path=target_path,
@@ -427,8 +416,8 @@ def _process_image_task(args: tuple[Path, BatchConfig]) -> FileStat:
             else None
         )
 
-        # 強制垃圾回收 (對子程序長時運行很重要)
-        gc.collect()
+        # 已由 Pool(maxtasksperchild=50) 自動回收進程以釋放記憶體，故免除手動回收開銷
+        # gc.collect()
 
     return FileStat(
         path=img_path,
@@ -531,7 +520,7 @@ def process_folder(cfg: BatchConfig) -> dict:
     def _maybe_write_report(force: bool = False) -> None:
         if not cfg.write_report_json or not results:
             return
-        if not force and len(results) % 5 != 0:
+        if not force and len(results) % 500 != 0:
             return
         report_path.parent.mkdir(parents=True, exist_ok=True)
         data = _build_report()
@@ -540,27 +529,24 @@ def process_folder(cfg: BatchConfig) -> dict:
         # 不要在迴圈中頻繁 print，以免洗版
 
     with progress:
-        # 1. 啟動資源監控 (主程序執行，監控整體系統)
-        monitor_task = progress.add_task("系統資源監控中…", total=None)
-        monitor = ResourceMonitor(
-            progress,
-            monitor_task,
-            interval=cfg.monitor_interval_sec,
-            enable_gpu=cfg.enable_gpu_monitor,
-        )
-        monitor.start()
-
-        # 2. 設定任務與參數
-        # 將參數打包成 Tuple 供 Pool 使用
+        monitor = None
         task_args = [(p, cfg) for p in files]
-
         work_task = progress.add_task("[bold]處理圖片[/]", total=len(files))
 
         try:
-            # 3. 建立 Process Pool 並執行
-            # 使用 imap_unordered 可以讓完成的任務儘快回傳，讓進度條流暢更新
-            # chunksize 設定為 1 可以讓進度更新最即時，若檔案極多可考慮加大
-            with mp.Pool(processes=num_procs) as pool:
+            # 2. 建立 Process Pool (使用 spawn 以避免 fork 導致的執行緒死鎖問題，且不設 maxtasksperchild)
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_procs) as pool:
+                # 3. 啟動資源監控 (此時 Pool 已啟動完成，可安全啟動監控執行緒)
+                monitor_task = progress.add_task("系統資源監控中…", total=None)
+                monitor = ResourceMonitor(
+                    progress,
+                    monitor_task,
+                    interval=cfg.monitor_interval_sec,
+                    enable_gpu=cfg.enable_gpu_monitor,
+                )
+                monitor.start()
+
                 for res in pool.imap_unordered(
                     _process_image_task, task_args, chunksize=1
                 ):
@@ -579,13 +565,15 @@ def process_folder(cfg: BatchConfig) -> dict:
 
         except KeyboardInterrupt:
             console.print("[red]使用者中斷執行 (KeyboardInterrupt)[/]")
-            pool.terminate()
+            if 'pool' in locals():
+                pool.terminate()
             raise
         except Exception as e:
-            console.print(f"[red]發生未預期錯誤: {e}[/]")
+            console.print(f"[bold red]發生未預期錯誤: {e}[/]")
             traceback.print_exc()
         finally:
-            monitor.stop()
+            if monitor is not None:
+                monitor.stop()
 
     # 彙整與顯示最終結果
     console.print(Rule("[bold green]處理完成，彙整結果[/]"))
@@ -752,7 +740,7 @@ def demo(
         # 以檔名建立各自子資料夾，避免 large_components 混在一起
         per_image_outdir="{stem}",
         skip_existing=True,
-        max_workers=12,  # 若 I/O 多可嘗試 >1
+        max_workers=20,  # 若 I/O 多可嘗試 >1
         top_n=5,
         remove_largest=True,
         seed=None,

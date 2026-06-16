@@ -73,7 +73,7 @@ class Config:
     in_channels: int = 1  # 輸入通道數 (1=灰階, 3=RGB)
 
     # --- 訓練設定 ---
-    epochs: int = 200  # 總訓練輪數
+    epochs: int = 2  # 總訓練輪數
     batch_size: int = 64  # 批次大小
     lr: float = 2e-5  # 學習率 (SSL 原本 3e-6 太小，改為 2e-5 以利特徵空間展開)
     weight_decay: float = 1e-5  # 權重衰減

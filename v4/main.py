@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import json
 from pathlib import Path
 
 # 將 v4 目錄優先加入至 Python 模組搜索路徑，避免與專案根目錄的 src 模組衝突
@@ -35,8 +36,8 @@ from src.data_pipeline import (
     extract_raw_zip,
     convert_pdfs,
     run_preprocessing_pipeline,
-    build_and_cache_dataset,
-    NPZDataset,
+    build_and_cache_dataset_json,
+    DiskDataset,
     GPUPrefetchDataLoader,
     GPUAugmentationModule
 )
@@ -56,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     """解析 CLI 入口參數"""
     parser = argparse.ArgumentParser(description="SimSiam v4 工程圖自監督學習訓練入口 CLI")
     parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_PATH, help="預設 YAML 設定檔路徑")
-    parser.add_argument("--load_cached_npz", action="store_true", help="是否強制直接讀取已壓縮的 .npz 快取檔以進行訓練")
+    parser.add_argument("--load_cached", action="store_true", help="是否強制直接讀取已儲存的快取檔以進行訓練")
     parser.add_argument("--epochs", type=int, default=None, help="設定訓練 Epochs 數量")
     parser.add_argument("--batch_size", type=int, default=None, help="設定 Batch 大小")
     parser.add_argument("--lr", type=float, default=None, help="設定學習率")
@@ -71,8 +72,8 @@ def main() -> None:
 
     # 1. 建立 CLI 覆寫列表 (Dotlist 格式)
     overrides = []
-    if args.load_cached_npz:
-        overrides.append("data.load_cached_npz=True")
+    if args.load_cached:
+        overrides.append("data.load_cached=True")
     if args.epochs is not None:
         overrides.append(f"training.epochs={args.epochs}")
     if args.batch_size is not None:
@@ -107,22 +108,23 @@ def main() -> None:
     logger.info("=========================================")
 
     # 4. 前處理防呆檢測與快取加載機制
-    cache_path = Path(cfg.data.cache_npz_path)
+    cache_path = Path(cfg.data.cache_path)
     loaded_from_cache = False
     
-    if cfg.data.load_cached_npz and cache_path.is_file():
+    if cfg.data.load_cached and cache_path.is_file():
         logger.info("偵測到指定載入已存檔快取，正在讀取: %s", cache_path)
         try:
-            with np.load(cache_path, allow_pickle=True) as data:
-                train_x = data["train_images"]
-                train_y = data["train_labels"]
-                val_x = data["val_images"]
-                val_y = data["val_labels"]
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                train_paths = data["train_paths"]
+                train_labels = data["train_labels"]
+                val_paths = data["val_paths"]
+                val_labels = data["val_labels"]
                 class_names = list(data["class_names"])
             loaded_from_cache = True
-            logger.info("極速快取讀取成功: Train=%d 張, Val=%d 張 | 類別數=%d", len(train_x), len(val_x), len(class_names))
+            logger.info("極速快取讀取成功: Train=%d 張, Val=%d 張 | 類別數=%d", len(train_paths), len(val_paths), len(class_names))
         except Exception as e:
-            logger.error("讀取 .npz 快取失敗，將回退到常規前處理防呆流程。錯誤: %s", e)
+            logger.error("讀取 JSON 快取失敗，將回退到常規前處理防呆流程。錯誤: %s", e)
 
     if not loaded_from_cache:
         logger.info("快取未就緒，啟動防呆前處理與資料解構檢查...")
@@ -169,13 +171,12 @@ def main() -> None:
                 max_workers=cfg.data.preprocess_max_workers
             )
             
-        # B. 資料集切割、CPU Letterbox 縮放並寫入新快取
-        train_x, train_y, val_x, val_y, class_names = build_and_cache_dataset(
+        # B. 資料集切割與寫入 JSON 快取
+        train_paths, train_labels, val_paths, val_labels, class_names = build_and_cache_dataset_json(
             preprocessed_dir=cfg.data.preprocessed_image_dir,
             cache_path=str(cache_path),
             split_ratio=cfg.data.split_ratio,
-            seed=cfg.data.base_seed,
-            size=cfg.training.img_size
+            seed=cfg.data.base_seed
         )
         logger.info("已生成資料快取檔: %s", cache_path)
 
@@ -188,9 +189,9 @@ def main() -> None:
     if device.type == "cuda":
         torch.cuda.manual_seed_all(cfg.data.base_seed)
 
-    # 6. 初始化 PyTorch 高效預取 Dataloader
-    train_ds = NPZDataset(train_x, train_y)
-    val_ds = NPZDataset(val_x, val_y)
+    # 6. 初始化 PyTorch 動態載入 Dataloader
+    train_ds = DiskDataset(train_paths, train_labels, img_size=cfg.training.img_size)
+    val_ds = DiskDataset(val_paths, val_labels, img_size=cfg.training.img_size)
     
     train_loader = GPUPrefetchDataLoader(
         dataset=train_ds,

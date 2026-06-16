@@ -20,8 +20,8 @@ data:
   dataset_dir: dataset
   split_ratio: 0.8
   base_seed: 42
-  cache_npz_path: dataset_cache.npz
-  load_cached_npz: false
+  cache_path: dataset_cache.json
+  load_cached: false
   norm_mean: 0.0394
   norm_std: 0.1752
 model:

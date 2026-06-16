@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import zipfile
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -417,19 +418,33 @@ def build_and_cache_dataset(
         
     # 讀取並執行 CPU Letterbox 縮放
     def _load_and_process(path_list: List[Path]) -> Tuple[np.ndarray, np.ndarray]:
-        images = []
-        labels = []
-        for p in path_list:
+        def _single_task(p: Path) -> Tuple[np.ndarray, int] | None:
             c_name = p.relative_to(src_dir).parts[0]
             label_id = class_map[c_name]
-            
             # 讀取為灰階圖
             arr = np.fromfile(str(p), dtype=np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 img_padded = letterbox_image(img, size=size, pad_value=255)
+                return img_padded, label_id
+            return None
+
+        # 使用執行緒池加速 (多核心 CPU 平行化讀取與解碼)
+        # 由於主要瓶頸在 I/O 與 OpenCV 的 C++ 影像解碼/縮放，執行緒池能有效釋放 GIL 並平行處理
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 透過 executor.map 確保結果順序與輸入 path_list 完全相同，保證結果不變
+            results = list(executor.map(_single_task, path_list))
+            
+        images = []
+        labels = []
+        for res in results:
+            if res is not None:
+                img_padded, label_id = res
                 images.append(img_padded)
                 labels.append(label_id)
+                
         return np.array(images, dtype=np.uint8), np.array(labels, dtype=np.int64)
         
     logger.info("正在載入並 Letterbox 縮放 Train 集 (共 %d 張)...", len(train_paths))
@@ -454,6 +469,72 @@ def build_and_cache_dataset(
     return train_x, train_y, val_x, val_y, class_names
 
 
+def build_and_cache_dataset_json(
+    preprocessed_dir: str,
+    cache_path: str,
+    split_ratio: float = 0.8,
+    seed: int = 42
+) -> Tuple[List[str], List[int], List[str], List[int], List[str]]:
+    """資料集路徑劃分與輕量級 JSON 快取儲存"""
+    src_dir = Path(preprocessed_dir)
+    logger.info("開始對前處理組件進行資料集分層劃分...")
+    
+    # 搜尋所有裁切組件
+    all_comp_paths = sorted(src_dir.glob("**/large_components/comp_*.png"))
+    if not all_comp_paths:
+        raise FileNotFoundError(f"在前處理路徑 {src_dir.resolve()} 中找不到組件檔案。")
+        
+    # 分類映射表
+    class_to_paths = {}
+    for p in all_comp_paths:
+        class_name = p.relative_to(src_dir).parts[0]
+        if class_name not in class_to_paths:
+            class_to_paths[class_name] = []
+        class_to_paths[class_name].append(p)
+        
+    class_names = sorted(list(class_to_paths.keys()))
+    class_map = {name: idx for idx, name in enumerate(class_names)}
+    
+    train_paths = []
+    train_labels = []
+    val_paths = []
+    val_labels = []
+    
+    # 分層抽樣拆分
+    random.seed(seed)
+    for c_name, paths in class_to_paths.items():
+        shuffled = sorted(paths)  # 保證跨平台初始排序一致
+        random.shuffle(shuffled)
+        idx = int(len(shuffled) * split_ratio)
+        
+        # 轉換為字串路徑以利 JSON 序列化
+        c_train = [str(p) for p in shuffled[:idx]]
+        c_val = [str(p) for p in shuffled[idx:]]
+        
+        train_paths.extend(c_train)
+        train_labels.extend([class_map[c_name]] * len(c_train))
+        val_paths.extend(c_val)
+        val_labels.extend([class_map[c_name]] * len(c_val))
+        
+    # 確保快取檔的父目錄存在
+    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # 儲存 JSON 快取檔
+    cache_data = {
+        "train_paths": train_paths,
+        "train_labels": train_labels,
+        "val_paths": val_paths,
+        "val_labels": val_labels,
+        "class_names": class_names
+    }
+    
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        
+    logger.info("快取歸檔完成，快取路徑: %s (檔案大小: %.2f MB)", cache_path, Path(cache_path).stat().st_size / (1024*1024))
+    return train_paths, train_labels, val_paths, val_labels, class_names
+
+
 # ============================================================
 # 4. 記憶體載入與 GPU 預取子模組 (PrefetchDataLoader & GPU Aug)
 # ============================================================
@@ -469,6 +550,37 @@ class NPZDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.images[idx], self.labels[idx]
+
+
+class DiskDataset(torch.utils.data.Dataset):
+    """動態從硬碟讀取與 Letterbox 縮放的 PyTorch 資料集"""
+    def __init__(self, image_paths: List[str] | List[Path], labels: List[int], img_size: int = 512) -> None:
+        self.image_paths = [str(p) for p in image_paths]
+        self.labels = torch.tensor(labels, dtype=torch.long)
+        self.img_size = img_size
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        p = self.image_paths[idx]
+        
+        # 讀取為灰階圖 (支援中文路徑)
+        try:
+            arr = np.fromfile(p, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        except Exception:
+            img = None
+            
+        if img is None:
+            # 防呆：若讀取失敗則返回一個空白白底圖
+            img_padded = np.full((self.img_size, self.img_size), 255, dtype=np.uint8)
+        else:
+            img_padded = letterbox_image(img, size=self.img_size, pad_value=255)
+            
+        # 轉為 Tensor 格式，形狀: [512, 512]，資料型態為 uint8，與 NPZDataset 對齊
+        x_tensor = torch.from_numpy(img_padded)
+        return x_tensor, self.labels[idx]
 
 
 class GPUPrefetcher:

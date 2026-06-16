@@ -54,9 +54,9 @@ class DataConfig:
     split_ratio: float = 0.8
     base_seed: int = 42
     
-    # 核心 v4 加速：.npz 快取路徑與是否直接讀取
-    cache_npz_path: str = "dataset/dataset_cache.npz"
-    load_cached_npz: bool = False  # CLI 若設為 True，直接讀取 cache_npz_path
+    # 核心 v4 加速：快取路徑與是否直接讀取
+    cache_path: str = "dataset/dataset_cache.json"
+    load_cached: bool = False  # CLI 若設為 True，直接讀取 cache_path
     
     # 影像標準化參數 (預設為吉輔 CAD 白底線條圖的統計值)
     norm_mean: float = 0.0394

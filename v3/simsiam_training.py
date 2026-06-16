@@ -122,7 +122,7 @@ class Config:
 
     # --- 資料集分割設定 ---
     split_ratio: float = 0.8
-    n_runs: int = 5
+    n_runs: int = 1
     base_seed: int = 42
 
     train_subpath: str = "Component_Dataset/train"
@@ -1055,7 +1055,7 @@ def main() -> None:
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="優化器 L2 權重衰減因子")
     parser.add_argument("--num_workers", type=int, default=8, help="DataLoader 載入器線程數")
     parser.add_argument("--save_dir", type=str, default=None, help="模型權重與 Logs 輸出目錄")
-    parser.add_argument("--n_runs", type=int, default=5, help="多 Run 訓練的重複次數")
+    parser.add_argument("--n_runs", type=int, default=1, help="多 Run 訓練的重複次數")
     parser.add_argument("--offline_aug", action="store_true", help="是否在訓練前執行離線資料增強")
     parser.add_argument("--num_aug_versions", type=int, default=20, help="離線資料增強版本數量")
     

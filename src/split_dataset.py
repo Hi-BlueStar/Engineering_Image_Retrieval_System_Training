@@ -257,7 +257,7 @@ class RichDatasetSplitter:
 # ==========================================
 if __name__ == "__main__":
     # 假定參數
-    SOURCE_DIR = "results/batch/engineering_images_100dpi"  # 您的來源路徑
+    SOURCE_DIR = "results/batch/engineering_images_100dpi/吉輔提供資料"  # 您的來源路徑
     OUTPUT_DIR = "dataset"  # 輸出路徑
     BASE_SEED = 42  # 初始種子碼
     REPEAT_TIMES = 20  # 重複執行次數 (N)

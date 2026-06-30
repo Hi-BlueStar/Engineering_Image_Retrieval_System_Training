@@ -76,6 +76,37 @@ class UnlabeledImages(Dataset):
             return self.transform(dummy)
 
 
+class GPUPooledDataset(Dataset):
+    """
+    僅載入與解碼圖片，不做隨機增強。回傳單個 uint8 張量。
+    """
+    def __init__(self, paths: list[Path], img_size: int = 512, grayscale: bool = True):
+        self.paths = list(paths)
+        self.grayscale = grayscale
+        # 只做 Resize 與 轉 Tensor (不標準化，保持 uint8 降低傳輸頻寬)
+        self.to_tensor = T.Compose([
+            T.Resize((img_size, img_size), interpolation=T.InterpolationMode.BILINEAR),
+            T.PILToTensor()  # 這會回傳 uint8 Tensor [C, H, W]，範圍為 0~255
+        ])
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, i) -> torch.Tensor:
+        p = self.paths[i]
+        try:
+            img = Image.open(p)
+            if self.grayscale:
+                img = img.convert("L")
+            else:
+                img = img.convert("RGB")
+            return self.to_tensor(img)
+        except Exception as e:
+            # 壞圖容錯
+            dummy = Image.new("L" if self.grayscale else "RGB", (512, 512))
+            return self.to_tensor(dummy)
+
+
 # -----------------------------------------------------------------------------
 # 2. SimSiam 模型架構 (Model Architecture)
 # -----------------------------------------------------------------------------
@@ -273,15 +304,17 @@ def calculate_collapse_std(z: torch.Tensor) -> float:
 def train_one_epoch(
     model: SimSiam,
     loader: DataLoader,
+    gpu_augmenter: nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     device: str
 ) -> tuple[float, float]:
-    """執行一個 Epoch 的訓練。
+    """執行一個 Epoch 的訓練 (GPU 資料增強版)。
 
     參數:
         model: SimSiam 模型實例。
-        loader: DataLoader，回傳 (v1, v2)。
+        loader: DataLoader，回傳單張原始影像。
+        gpu_augmenter: GPU 增強模組。
         optimizer: 優化器 (AdamW 或 SGD)。
         scaler: GradScaler，用於混合精度訓練 (AMP)。
         device: 'cuda' 或 'cpu'。
@@ -306,9 +339,15 @@ def train_one_epoch(
     else:
         amp_ctx = torch.cuda.amp.autocast(enabled=use_amp)
 
-    for v1, v2 in loader:
-        v1 = v1.to(device, non_blocking=True)
-        v2 = v2.to(device, non_blocking=True)
+    for x in loader:
+        # x shape: [B, C, H, W], dtype: uint8, CPU
+        # 1. 非同步傳送至 GPU 並轉換為 float32 (0.0 ~ 1.0)
+        x = x.to(device, dtype=torch.float32, non_blocking=True) / 255.0
+
+        # 2. 在 GPU 上平行進行兩次獨立的隨機增強
+        with torch.no_grad():
+            v1 = gpu_augmenter(x)
+            v2 = gpu_augmenter(x)
 
         optimizer.zero_grad(set_to_none=True)  # set_to_none 稍微快一點
 
@@ -339,16 +378,21 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model: SimSiam, loader: DataLoader, device: str) -> tuple[float, float]:
-    """驗證模型損失與標準差 (注意：這不是下游分類準確率，僅是 SSL 收斂指標)。"""
+def evaluate(model: SimSiam, loader: DataLoader, gpu_augmenter: nn.Module, device: str) -> tuple[float, float]:
+    """驗證模型損失與標準差 (GPU 資料增強版)。"""
     model.eval()
     total_loss = 0.0
     total_std = 0.0
     num_batches = 0
 
-    for v1, v2 in loader:
-        v1 = v1.to(device, non_blocking=True)
-        v2 = v2.to(device, non_blocking=True)
+    for x in loader:
+        # x shape: [B, C, H, W], dtype: uint8, CPU
+        x = x.to(device, dtype=torch.float32, non_blocking=True) / 255.0
+        
+        # 在 GPU 上平行進行兩次獨立的隨機增強
+        v1 = gpu_augmenter(x)
+        v2 = gpu_augmenter(x)
+        
         p1, p2, z1, z2 = model(v1, v2)
         loss = 0.5 * (D(p1, z2) + D(p2, z1))
         total_loss += loss.item()

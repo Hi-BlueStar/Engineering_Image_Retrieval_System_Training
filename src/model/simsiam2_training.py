@@ -262,7 +262,7 @@ class ExperimentManager:
         if "train_z_std" in df.columns:
             fig_std = go.Figure()
             fig_std.add_trace(go.Scattergl(x=df["epoch"], y=df["train_z_std"], mode="lines+markers", name="Train Std", line=dict(color="blue")))
-            if "val_z_std" in df.columns and "val_z_std" in df.columns[df["val_z_std"].notnull()]:
+            if "val_z_std" in df.columns and df["val_z_std"].notnull().any():
                 fig_std.add_trace(go.Scattergl(x=df["epoch"], y=df["val_z_std"], mode="lines+markers", name="Val Std", line=dict(color="orange")))
             
             fig_std.update_layout(
@@ -311,13 +311,9 @@ def run_single_session(cfg: Config, run_name: str, train_path: Path, val_path: P
             if not train_files:
                 raise FileNotFoundError(f"路徑 {escape(str(train_path))} 無圖片")
 
-            # 建立 Transform 與 Loader
-            norm_mean, norm_std = [0.5], [0.5]
-            train_transform = aug.EngineeringDrawingAugmentation(img_size=current_cfg.img_size, mean=norm_mean, std=norm_std)
-            val_transform = aug.EngineeringDrawingAugmentation(img_size=current_cfg.img_size, mean=norm_mean, std=norm_std)
-            
-            train_ds = ss.UnlabeledImages(train_files, transform=train_transform, grayscale=(current_cfg.in_channels==1))
-            val_ds = ss.UnlabeledImages(val_files, transform=val_transform, grayscale=(current_cfg.in_channels==1))
+            # 建立 Dataset (改用 GPUPooledDataset 以在 CPU 端僅進行極輕量的載入與縮放，並以 uint8 儲存)
+            train_ds = ss.GPUPooledDataset(train_files, img_size=current_cfg.img_size, grayscale=(current_cfg.in_channels==1))
+            val_ds = ss.GPUPooledDataset(val_files, img_size=current_cfg.img_size, grayscale=(current_cfg.in_channels==1))
             
             t_dl = torch.utils.data.DataLoader(
                 train_ds, batch_size=current_cfg.batch_size, shuffle=True, 
@@ -350,6 +346,14 @@ def run_single_session(cfg: Config, run_name: str, train_path: Path, val_path: P
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=current_cfg.epochs)
     scaler = torch.amp.GradScaler(enabled=(device == "cuda"))
 
+    # 每個 Session 初始化專屬的 GPU 資料增強模組
+    norm_mean, norm_std = [0.5], [0.5]
+    gpu_augmenter = aug.GPUEngineeringDrawingAugmentation(
+        img_size=current_cfg.img_size,
+        mean=norm_mean,
+        std=norm_std
+    ).to(device)
+
     # --- 3. 開始訓練 ---
     best_val_loss = float('inf')
     
@@ -369,8 +373,8 @@ def run_single_session(cfg: Config, run_name: str, train_path: Path, val_path: P
         for epoch in range(1, current_cfg.epochs + 1):
             epoch_start = time.time()
             
-            train_loss, train_std = ss.train_one_epoch(model, train_dl, optimizer, scaler, device)
-            val_loss, val_std = ss.evaluate(model, val_dl, device) if len(val_dl) > 0 else (0.0, 0.0)
+            train_loss, train_std = ss.train_one_epoch(model, train_dl, gpu_augmenter, optimizer, scaler, device)
+            val_loss, val_std = ss.evaluate(model, val_dl, gpu_augmenter, device) if len(val_dl) > 0 else (0.0, 0.0)
             
             epoch_dur = time.time() - epoch_start
             current_lr = optimizer.param_groups[0]['lr']
@@ -408,7 +412,19 @@ def main():
     if os.name == "nt" and cfg.num_workers > 0:
         console.print("[yellow]⚠️  Windows 系統建議將 num_workers 設為 0[/yellow]")
 
+    # 固定所有隨機種子以確保實驗再現性 (Reproducibility)
+    import random
+    import numpy as np
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(cfg.seed)
+        torch.cuda.manual_seed_all(cfg.seed)
+    
+    # 啟用 PyTorch 與 CuDNN 的確定性計算演算法
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     
     # 1. 掃描 dataset root 下的所有 Run 資料夾
     root_path = Path(cfg.dataset_root)

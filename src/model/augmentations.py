@@ -533,3 +533,130 @@ class TTAGaussianNoise:
         results.append(self.base_transform(img_noisy))
 
         return results
+
+
+# -----------------------------------------------------------------------------
+# GPU-Accelerated Data Augmentation (GPU 資料增強優化)
+# -----------------------------------------------------------------------------
+import torch.nn as nn
+import torch.nn.functional as F
+
+class GPUMorphology(nn.Module):
+    """
+    隨機應用膨脹 (Dilation) 或腐蝕 (Erosion) 以模擬線條粗細變化 (GPU 加速版)。
+    對於白色背景上的黑色線條 (CAD圖)：
+      - 亮區腐蝕 (Erosion): 黑色線條變粗 -> 1.0 - MaxPool(1.0 - img)
+      - 亮區膨脹 (Dilation): 黑色線條變細 -> MaxPool(img)
+    """
+    def __init__(self, p: float = 0.5, kernel_range: Tuple[int, int] = (3, 5)):
+        super().__init__()
+        self.p = p
+        self.kernel_sizes = [k for k in range(kernel_range[0], kernel_range[1] + 1, 2)]
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        # img shape: [C, H, W]
+        if random.random() > self.p:
+            return img
+
+        kernel_size = random.choice(self.kernel_sizes)
+        op_type = random.choice(["dilation", "erosion"])
+        padding = kernel_size // 2
+
+        # 確保有 batch 維度以便 max_pool2d 處理
+        is_3d = img.ndim == 3
+        if is_3d:
+            img = img.unsqueeze(0) # [1, C, H, W]
+
+        if op_type == "dilation":
+            out = F.max_pool2d(img, kernel_size=kernel_size, stride=1, padding=padding)
+        else:
+            out = 1.0 - F.max_pool2d(1.0 - img, kernel_size=kernel_size, stride=1, padding=padding)
+
+        if is_3d:
+            out = out.squeeze(0)
+        return out
+
+
+class GPUSaltAndPepperNoise(nn.Module):
+    """
+    在 GPU 上隨機將像素翻轉為黑色 (0.0) 或白色 (1.0) (GPU 加速版)。
+    """
+    def __init__(self, p: float = 0.5, density: float = 0.02):
+        super().__init__()
+        self.p = p
+        self.density = density
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        if random.random() > self.p:
+            return img
+
+        # 產生與 img 同大小的隨機 mask
+        noise_prob = torch.rand_like(img)
+        
+        # 決定哪些像素要撒鹽（變為 1.0），哪些撒胡椒（變為 0.0）
+        salt_mask = noise_prob < (self.density / 2.0)
+        pepper_mask = (noise_prob >= (self.density / 2.0)) & (noise_prob < self.density)
+        
+        out = img.clone()
+        out[salt_mask] = 1.0
+        out[pepper_mask] = 0.0
+        return out
+
+
+class GPUEngineeringDrawingAugmentation(nn.Module):
+    """
+    針對工程圖的 GPU 平行資料增強管線。
+    處理順序為：幾何變換 -> 形態學擾動 -> 彈性變形 -> 椒鹽雜訊 -> 標準化 -> 隨機遮擋。
+    採用逐樣本套用以避免 Batch 內隨機參數完全一致。
+    """
+    def __init__(
+        self,
+        img_size: int = 512,
+        mean: List[float] = [0.5],
+        std: List[float] = [0.5]
+    ):
+        super().__init__()
+        self.img_size = img_size
+        
+        # 1. 幾何變換
+        self.geometric_trans = T.Compose([
+            T.RandomResizedCrop(img_size, scale=(0.2, 1.0), interpolation=T.InterpolationMode.BILINEAR),
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomVerticalFlip(p=0.5),
+            T.RandomApply([
+                T.RandomAffine(degrees=[-45, 45], interpolation=T.InterpolationMode.BILINEAR)
+            ], p=0.3)
+        ])
+
+        # 2. 彈性變形
+        self.elastic_trans = T.RandomApply([
+            T.ElasticTransform(alpha=50.0, sigma=5.0, interpolation=T.InterpolationMode.BILINEAR)
+        ], p=0.3)
+
+        # 3. 形態學擾動
+        self.morph_trans = GPUMorphology(p=0.3, kernel_range=(3, 5))
+
+        # 4. 椒鹽雜訊
+        self.noise_trans = GPUSaltAndPepperNoise(p=0.2, density=0.02)
+
+        # 5. 標準化
+        self.normalize = T.Normalize(mean=mean, std=std)
+        
+        # 6. 遮擋 (Cutout)
+        self.cutout_trans = T.RandomErasing(p=0.3, scale=(0.02, 0.15), ratio=(0.3, 3.3), value=0.0)
+
+    def _augment_single_image(self, img: torch.Tensor) -> torch.Tensor:
+        # 輸入為 [C, H, W] 且值在 0.0 ~ 1.0 之間的 GPU Tensor
+        out = self.geometric_trans(img)
+        out = self.morph_trans(out)
+        out = self.elastic_trans(out)
+        out = self.noise_trans(out)
+        out = self.normalize(out)
+        out = self.cutout_trans(out)
+        return out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: [B, C, H, W] GPU float32 Tensor, 範圍 0.0 ~ 1.0
+        augmented_list = [self._augment_single_image(x[i]) for i in range(x.size(0))]
+        return torch.stack(augmented_list, dim=0)
+
